@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="ui/assets/ifoxy_logo.png" alt="iFoxy" width="120" />
+<img src="docs/images/logo-horizontal.png" alt="iFoxy" width="360" />
 
 # iFoxy for Windows
 
@@ -20,7 +20,9 @@ One binary. A real WebView2 interface. A userspace TCP/IP stack that tunnels you
 
 <a id="english"></a>
 
-## 🦊 English
+<img src="docs/images/fox-icon.png" alt="" width="48" /> **English**
+
+## English
 
 ### What is iFoxy?
 
@@ -114,7 +116,9 @@ Please do not open public issues for security problems. Report them privately to
 
 <div dir="rtl" align="right">
 
-## 🦊 فارسی
+<img src="docs/images/fox-icon.png" alt="" width="48" /> **فارسی**
+
+## فارسی
 
 ### iFoxy چیست؟
 
@@ -193,6 +197,6 @@ cargo test                 # اجرای تست‌ها
 
 <div align="center">
 
-Made with 🦊 and Rust
+<img src="docs/images/fox-icon.png" alt="iFoxy fox" width="32" /><br/>Made with Rust
 
 </div>
