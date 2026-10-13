@@ -46,6 +46,61 @@ impl WindowsNativeBackend {
     }
 }
 
+/// Adds or deletes a route through `netsh interface ipv4`. Used as a fallback
+/// when the IP Helper row API rejects a route. Requires administrator rights.
+#[cfg(windows)]
+fn netsh_route(
+    action: &str,
+    dest: Ipv4Addr,
+    prefix_len: u8,
+    gateway: Ipv4Addr,
+    if_index: u32,
+    metric: Option<u32>,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let prefix = format!("prefix={}/{}", dest, prefix_len);
+    let iface = format!("interface={}", if_index);
+    let nexthop = format!("nexthop={}", gateway);
+    let mut args: Vec<String> = vec![
+        "interface".into(),
+        "ipv4".into(),
+        action.into(),
+        "route".into(),
+        prefix,
+        iface,
+        nexthop,
+    ];
+    if let Some(m) = metric {
+        args.push(format!("metric={}", m));
+    }
+    args.push("store=active".into());
+
+    let out = std::process::Command::new("netsh")
+        .args(&args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+}
+
+#[cfg(not(windows))]
+fn netsh_route(
+    _action: &str,
+    _dest: Ipv4Addr,
+    _prefix_len: u8,
+    _gateway: Ipv4Addr,
+    _if_index: u32,
+    _metric: Option<u32>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 impl Default for WindowsNativeBackend {
     fn default() -> Self {
         Self::new()
@@ -76,32 +131,73 @@ impl NetworkBackend for WindowsNativeBackend {
     fn add_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError> {
         let mask = Self::prefix_to_mask(route.prefix_len);
 
-        native_create_ip_forward_entry(
+        tracing::info!(
+            "Adding route {}/{} via {} on interface index {} (metric {})",
+            route.destination,
+            route.prefix_len,
+            route.gateway,
+            if_index,
+            route.metric
+        );
+
+        match native_create_ip_forward_entry(
             route.destination,
             mask,
             route.gateway,
             if_index,
             route.metric,
-        )
-        .map_err(|err_code| {
-            RouteError::CommandFailed(format!(
-                "Failed to add route to {}/{} via {}: Win32 error {}",
-                route.destination, route.prefix_len, route.gateway, err_code
-            ))
-        })
+        ) {
+            Ok(()) => Ok(()),
+            Err(err_code) => {
+                // The IP Helper row API can reject a valid route with
+                // ERROR_BAD_ARGUMENTS (160). Retry through netsh, which uses a
+                // different code path in Windows.
+                tracing::warn!(
+                    "IP Helper add route failed (Win32 {}); trying netsh fallback",
+                    err_code
+                );
+                netsh_route(
+                    "add",
+                    route.destination,
+                    route.prefix_len,
+                    route.gateway,
+                    if_index,
+                    Some(route.metric),
+                )
+                .map_err(|netsh_err| {
+                    RouteError::CommandFailed(format!(
+                        "Failed to add route to {}/{} via {}: Win32 error {} (netsh: {})",
+                        route.destination, route.prefix_len, route.gateway, err_code, netsh_err
+                    ))
+                })
+            }
+        }
     }
 
     fn delete_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError> {
         let mask = Self::prefix_to_mask(route.prefix_len);
 
-        native_delete_ip_forward_entry(route.destination, mask, route.gateway, if_index).map_err(
-            |err_code| {
-                RouteError::CommandFailed(format!(
-                    "Failed to delete route to {}/{} via {}: Win32 error {}",
-                    route.destination, route.prefix_len, route.gateway, err_code
-                ))
-            },
-        )
+        match native_delete_ip_forward_entry(route.destination, mask, route.gateway, if_index) {
+            Ok(()) => Ok(()),
+            Err(err_code) => {
+                // The route may have been added through the netsh fallback, so
+                // remove it the same way.
+                netsh_route(
+                    "delete",
+                    route.destination,
+                    route.prefix_len,
+                    route.gateway,
+                    if_index,
+                    None,
+                )
+                .map_err(|netsh_err| {
+                    RouteError::CommandFailed(format!(
+                        "Failed to delete route to {}/{} via {}: Win32 error {} (netsh: {})",
+                        route.destination, route.prefix_len, route.gateway, err_code, netsh_err
+                    ))
+                })
+            }
+        }
     }
 
     fn set_system_proxy(&self, port: u16) -> Result<(), String> {
