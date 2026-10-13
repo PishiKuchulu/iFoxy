@@ -140,6 +140,61 @@ pub struct WintunDevice {
     pub ip: Ipv4Addr,
 }
 
+/// Sets MTU and interface metric through `netsh`. Used only as a fallback when
+/// the IP Helper API rejects the change. Requires administrator rights.
+#[cfg(windows)]
+fn set_mtu_metric_netsh(adapter_name: &str, mtu: u32, metric: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mtu_arg = format!("mtu={}", mtu);
+    let out = std::process::Command::new("netsh")
+        .args([
+            "interface",
+            "ipv4",
+            "set",
+            "subinterface",
+            adapter_name,
+            mtu_arg.as_str(),
+            "store=active",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "set subinterface: {}",
+            String::from_utf8_lossy(&out.stdout).trim()
+        ));
+    }
+
+    let metric_arg = format!("metric={}", metric);
+    let out = std::process::Command::new("netsh")
+        .args([
+            "interface",
+            "ipv4",
+            "set",
+            "interface",
+            adapter_name,
+            metric_arg.as_str(),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "set interface metric: {}",
+            String::from_utf8_lossy(&out.stdout).trim()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_mtu_metric_netsh(_adapter_name: &str, _mtu: u32, _metric: u32) -> Result<(), String> {
+    Ok(())
+}
+
 impl WintunDevice {
     pub fn create_or_open(name: &str, preferred_ip: Ipv4Addr) -> Result<Self, WintunError> {
         let dll_path = ensure_wintun_dll()?;
@@ -174,15 +229,23 @@ impl WintunDevice {
                 WintunError::Driver(format!("IP Helper set interface IP failed: 0x{:08X}", e))
             })?;
 
-        // 2. Configure MTU 1420 and interface metric 1 natively (M5, R-4)
-        crate::vpn::iphlpapi::native_set_interface_metric_and_mtu(
+        // 2. Configure MTU 1420 and interface metric 1 (M5, R-4).
+        // This step is best-effort: the tunnel works without it, and some Windows
+        // builds reject SetIpInterfaceEntry with ERROR_INVALID_PARAMETER (0x57).
+        // Fall back to netsh, and if that also fails, log and continue.
+        if let Err(e) = crate::vpn::iphlpapi::native_set_interface_metric_and_mtu(
             adapter_index,
             1,
             VPN_ADAPTER_MTU,
-        )
-        .map_err(|e| {
-            WintunError::Driver(format!("IP Helper set MTU/metric failed: 0x{:08X}", e))
-        })?;
+        ) {
+            tracing::warn!(
+                "IP Helper set MTU/metric failed (0x{:08X}); trying netsh fallback",
+                e
+            );
+            if let Err(err) = set_mtu_metric_netsh(name, VPN_ADAPTER_MTU, 1) {
+                tracing::warn!("netsh MTU/metric fallback also failed: {}", err);
+            }
+        }
 
         // 3. Configure primary DNS (1.1.1.1) on Wintun interface natively using SetInterfaceDnsSettings (R-4, S-4)
         crate::vpn::iphlpapi::native_set_interface_dns(adapter_index, Ipv4Addr::new(1, 1, 1, 1))
