@@ -1,0 +1,67 @@
+[package]
+name = "ifoxy-windows"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "cookies"] }
+h2 = "0.4"
+http = "1.0"
+bytes = "1.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pki-types = "1.10"
+webpki-roots = "0.26"
+ring = "0.17"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+regex = "1.11"
+url = "2.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wintun = "0.5"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+zeroize = { version = "1.8", features = ["derive"] }
+subtle = "2.6"
+wry = "0.57"
+tao = "0.37"
+windows-sys = { version = "0.52", features = [
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lib]
+name = "ifoxy_windows"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ifoxy_app"
+path = "src/main.rs"
+
+[features]
+default = []
+test-doubles = []
+
+[build-dependencies]
+winres = "0.1"
+
+[dev-dependencies]
+ifoxy-windows = { path = ".", features = ["test-doubles"] }
+tokio = { version = "1.43", features = ["full", "test-util"] }
+rcgen = "0.13"
+
+
