@@ -1,5 +1,6 @@
 package com.pishi.ifoxy.ui.navigation
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -72,6 +73,7 @@ fun IFoxyNavGraph(
         composable(IFoxyRoutes.SETTINGS) {
             SettingsScreen(
                 settingsStore = app.settingsStore,
+                darkTheme = themeController.resolveDark(isSystemInDarkTheme()),
                 onOpenLogs = { navController.navigate(IFoxyRoutes.LOGS) },
                 onSignOut = {
                     onDisconnect()

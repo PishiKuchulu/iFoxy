@@ -66,6 +66,13 @@ jobs:
         if: always()
         run: rm -f release-keystore.jks
 
+      - name: Name the APK for the release
+        # Gradle's default output is app-release.apk (module + variant);
+        # publish it under the product name instead.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mv app/build/outputs/apk/release/app-release.apk "app/build/outputs/apk/release/iFoxy-v${version}.apk"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.9 (versionCode 46) — UI fixes from on-device testing
+
+- **Theme fixed:** the Home palette now follows the day/night toggle
+  (light = brand yellow, dark = ink) instead of switching with the
+  connection state; connecting no longer recolors the app, and the header
+  theme button visibly works on every screen.
+- **Home simplified:** the flag card is the only location entry point
+  (tap it to choose a location); the Recommended card and the Select
+  Location pill were removed.
+- **Header:** the README banner (`logo-horizontal.png`) replaces the
+  text wordmark.
+- **Home no longer scrolls:** the layout is fixed-height and the
+  "Protected by your Firefox account" footer is always visible.
+- **Settings rebuilt:** each category is now a card that expands like a
+  menu when tapped, on a background that matches the Home screen.
+- **Release asset renamed:** the APK ships as `iFoxy-v<version>.apk`
+  instead of Gradle's default `app-release.apk`.
+
 ## 1.0.8 (versionCode 45) — hardening & stability
 
 > Rebrand: the app is now **iFoxy** (package `com.pishi.ifoxy`), the Android

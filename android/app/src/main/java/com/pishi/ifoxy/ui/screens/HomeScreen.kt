@@ -8,6 +8,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,14 +26,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
@@ -60,6 +58,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -68,12 +67,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pishi.ifoxy.IFoxyApp
+import com.pishi.ifoxy.R
 import com.pishi.ifoxy.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.pishi.ifoxy.data.RECOMMENDED_COUNTRY_CODE
 import com.pishi.ifoxy.data.ServerListClient
 import com.pishi.ifoxy.data.formatBytes
 import com.pishi.ifoxy.data.model.ConnectionState
-import com.pishi.ifoxy.data.model.VpnCountry
 import com.pishi.ifoxy.data.model.emojiFlag
 import com.pishi.ifoxy.ui.components.WorldMapLayer
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
@@ -92,20 +91,19 @@ import com.pishi.ifoxy.vpn.ExitCheck
 import com.pishi.ifoxy.vpn.IFoxyVpnService
 import com.pishi.ifoxy.vpn.IpLocationInfo
 import com.pishi.ifoxy.vpn.PingUtil
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
- * iFoxy home, per the Penpot "iFoxy — Screens" design (01 Connected /
- * 02 Disconnected): brand-yellow screen with a neon halo while connected,
- * ink-dark screen while disconnected, drifting world map in both states
- * (Motion & Glow spec: 90 s connected / 120 s disconnected). All data is
- * the app's real state — selected/last-used server, recommended server,
- * session bytes, ping, exit IP and the Guardian quota.
+ * iFoxy home, per the Penpot "iFoxy — Screens" design: the palette follows
+ * the user's theme (light = brand yellow, dark = ink), the neon halo and
+ * drifting world map run while connected (Motion & Glow spec: 90 s
+ * connected / 120 s disconnected). The layout is fixed — no scrolling —
+ * and the flag card is the only location entry point. All data is the
+ * app's real state — selected/last-used server, session bytes, ping,
+ * exit IP and the Guardian quota.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -128,20 +126,22 @@ fun HomeScreen(
 
     val connected = state == ConnectionState.CONNECTED
     val connecting = state == ConnectionState.CONNECTING
-    val onYellow = connected
+
+    // The palette follows the user's theme (header toggle), NOT the
+    // connection state: the light theme is the brand-yellow screen and the
+    // dark theme is the ink screen, connected or not.
+    val systemInDarkTheme = isSystemInDarkTheme()
+    val darkTheme = themeController.resolveDark(systemInDarkTheme)
 
     val background by animateColorAsState(
-        targetValue = if (onYellow) IFoxyYellow else IFoxyBgDark,
+        targetValue = if (darkTheme) IFoxyBgDark else IFoxyYellow,
         label = "home-background",
     )
-    val ink = if (onYellow) IFoxyInk else Color.White
-    val muted = if (onYellow) IFoxyInk.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.55f)
-    val cardBg = if (onYellow) Color.White else IFoxyCardDark
-    val cardBgAlt = if (onYellow) Color.White.copy(alpha = 0.45f) else IFoxyCardDark
-    val chipBg = if (onYellow) IFoxyInk else IFoxyCardDark
-    val errorColor = if (onYellow) IFoxyErrorOnYellow else IFoxyErrorOnDark
-
-    val systemInDarkTheme = isSystemInDarkTheme()
+    val ink = if (darkTheme) Color.White else IFoxyInk
+    val muted = if (darkTheme) Color.White.copy(alpha = 0.55f) else IFoxyInk.copy(alpha = 0.62f)
+    val cardBg = if (darkTheme) IFoxyCardDark else Color.White
+    val chipBg = if (darkTheme) IFoxyCardDark else IFoxyInk
+    val errorColor = if (darkTheme) IFoxyErrorOnDark else IFoxyErrorOnYellow
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
@@ -158,7 +158,6 @@ fun HomeScreen(
     var quotaRemaining by remember { mutableStateOf(app.settingsStore.cachedQuotaRemaining) }
     var quotaMax by remember { mutableStateOf(app.settingsStore.cachedQuotaMax) }
     var isUnlimited by remember { mutableStateOf(app.settingsStore.cachedIsUnlimited) }
-    var recommendedCountry by remember { mutableStateOf<VpnCountry?>(null) }
 
     LaunchedEffect(state) {
         if (state == ConnectionState.CONNECTED) {
@@ -189,10 +188,6 @@ fun HomeScreen(
             }
         }
         launch {
-            val cached = withContext(Dispatchers.IO) { app.serverListClient.loadCachedCountries() }
-            recommendedCountry = cached.firstOrNull { it.code == RECOMMENDED_COUNTRY_CODE }
-        }
-        launch {
             val token = app.authRepository.currentAccessToken()
             if (token != null) {
                 runCatching { app.guardianClient.fetchUserInfo(GUARDIAN_ENDPOINT_DEFAULT, token) }
@@ -220,7 +215,7 @@ fun HomeScreen(
     ) {
         // Drifting world map behind the hero (Motion & Glow spec).
         WorldMapLayer(
-            color = if (onYellow) IFoxyMapOnYellow.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.05f),
+            color = if (darkTheme) Color.White.copy(alpha = 0.05f) else IFoxyMapOnYellow.copy(alpha = 0.5f),
             driftMillis = if (connected) 90_000 else 120_000,
             modifier = Modifier
                 .fillMaxWidth()
@@ -230,8 +225,7 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .verticalScroll(rememberScrollState()),
+                .statusBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Column(
@@ -247,24 +241,18 @@ fun HomeScreen(
                         .padding(top = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(verticalAlignment = Alignment.Top) {
-                        Text(
-                            "iFoxy",
-                            style = TextStyle(
-                                fontFamily = PoppinsFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 22.sp,
-                            ),
-                            color = ink,
-                        )
-                        Box(
-                            modifier = Modifier
-                                .padding(start = 4.dp, top = 4.dp)
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(IFoxyNeonOrange),
-                        )
-                    }
+                    // README banner (docs/images/logo-horizontal.png) as
+                    // the header logo, on an ink plate so its yellow
+                    // lettering stays readable on the light theme too.
+                    Image(
+                        painter = painterResource(R.drawable.logo_horizontal),
+                        contentDescription = "iFoxy",
+                        modifier = Modifier
+                            .height(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(IFoxyInk)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
                     Spacer(Modifier.weight(1f))
                     val mode = themeController.mode
                     val showingDark = themeController.resolveDark(systemInDarkTheme)
@@ -295,7 +283,7 @@ fun HomeScreen(
                                 ThemeMode.LIGHT -> "Theme: light. Tap for dark mode, long press to follow the system"
                                 ThemeMode.DARK -> "Theme: dark. Tap for light mode, long press to follow the system"
                             },
-                            tint = if (onYellow) IFoxyYellow else Color.White,
+                            tint = if (darkTheme) Color.White else IFoxyYellow,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -311,13 +299,13 @@ fun HomeScreen(
                         Icon(
                             imageVector = Icons.Filled.Tune,
                             contentDescription = "Settings",
-                            tint = if (onYellow) IFoxyYellow else Color.White,
+                            tint = if (darkTheme) Color.White else IFoxyYellow,
                             modifier = Modifier.size(20.dp),
                         )
                     }
                 }
 
-                Spacer(Modifier.height(22.dp))
+                Spacer(Modifier.height(18.dp))
                 Text(
                     "Recent Connection",
                     style = TextStyle(
@@ -329,25 +317,19 @@ fun HomeScreen(
                 )
                 Spacer(Modifier.height(10.dp))
 
-                // Recent / recommended cards.
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    // Last used (current selection).
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(96.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(cardBg)
-                            .clickable(role = Role.Button) {
-                                if (!connected && !connecting && selectedProxy != null) {
-                                    onRequestConnect()
-                                } else {
-                                    onOpenServers()
-                                }
-                            }
-                            .padding(14.dp),
-                    ) {
-                        Column {
+                // The single location entry point on Home: the current /
+                // last-used server card. Tapping it opens Choose location.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(92.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardBg)
+                        .clickable(role = Role.Button, onClick = onOpenServers)
+                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
                             val flag = selectedProxy?.emojiFlag
                             if (!flag.isNullOrBlank()) {
                                 Text(flag, fontSize = 20.sp)
@@ -410,77 +392,17 @@ fun HomeScreen(
                                 )
                             }
                         }
-                    }
-
-                    Spacer(Modifier.width(12.dp))
-
-                    // Recommended quick-connect.
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(96.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(cardBgAlt)
-                            .clickable(role = Role.Button, enabled = !connecting) {
-                                if (connected) {
-                                    onOpenServers()
-                                } else {
-                                    val country = recommendedCountry
-                                    val chosen = country?.let {
-                                        ServerListClient.candidatesForCountry(
-                                            listOf(it),
-                                            it.code,
-                                        ).randomOrNull()
-                                    }
-                                    if (chosen != null) {
-                                        app.proxyStateStore.save(chosen)
-                                        onRequestConnect()
-                                    } else {
-                                        onOpenServers()
-                                    }
-                                }
-                            }
-                            .padding(14.dp),
-                    ) {
-                        Column {
-                            val recFlag = recommendedCountry?.emojiFlag
-                            if (!recFlag.isNullOrBlank()) {
-                                Text(recFlag, fontSize = 20.sp)
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Filled.Block,
-                                    contentDescription = null,
-                                    tint = ink,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                recommendedCountry?.name ?: "Recommended",
-                                style = TextStyle(
-                                    fontFamily = PoppinsFamily,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 14.sp,
-                                ),
-                                color = ink,
-                                maxLines = 1,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                if (connected) "Switch" else "Connect",
-                                style = TextStyle(
-                                    fontFamily = PoppinsFamily,
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 12.sp,
-                                ),
-                                color = if (onYellow) muted else IFoxyYellow,
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = muted,
+                            modifier = Modifier.size(22.dp),
+                        )
                     }
                 }
 
                 // Power hero with neon halo (connected) / static ring.
-                Spacer(Modifier.height(30.dp))
+                Spacer(Modifier.height(22.dp))
                 Box(
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center,
@@ -507,7 +429,7 @@ fun HomeScreen(
                         )
                         Box(
                             modifier = Modifier
-                                .size(210.dp)
+                                .size(196.dp)
                                 .scale(haloScale)
                                 .clip(CircleShape)
                                 .background(
@@ -521,25 +443,25 @@ fun HomeScreen(
                         )
                         Box(
                             modifier = Modifier
-                                .size(178.dp)
+                                .size(168.dp)
                                 .border(2.dp, IFoxyNeonOrange.copy(alpha = 0.45f), CircleShape),
                         )
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(178.dp)
+                                .size(168.dp)
                                 .border(
                                     1.5.dp,
-                                    (if (onYellow) IFoxyInk else Color.White).copy(alpha = 0.22f),
+                                    (if (darkTheme) Color.White else IFoxyInk).copy(alpha = 0.22f),
                                     CircleShape,
                                 ),
                         )
                     }
                     Box(
                         modifier = Modifier
-                            .size(128.dp)
+                            .size(120.dp)
                             .clip(CircleShape)
-                            .background(if (connected) IFoxyInk else IFoxyCardDark)
+                            .background(if (connected || !darkTheme) IFoxyInk else IFoxyCardDark)
                             .clickable(role = Role.Button) {
                                 if (state == ConnectionState.DISCONNECTED) onRequestConnect() else onDisconnect()
                             },
@@ -549,12 +471,12 @@ fun HomeScreen(
                             imageVector = Icons.Filled.PowerSettingsNew,
                             contentDescription = if (state == ConnectionState.DISCONNECTED) "Connect" else "Disconnect",
                             tint = Color.White.copy(alpha = if (connected) 1f else 0.75f),
-                            modifier = Modifier.size(54.dp),
+                            modifier = Modifier.size(50.dp),
                         )
                     }
                 }
 
-                Spacer(Modifier.height(22.dp))
+                Spacer(Modifier.height(16.dp))
                 Text(
                     text = if (connected) formatDuration(elapsedSeconds) else "00:00:00",
                     style = TextStyle(
@@ -634,7 +556,7 @@ fun HomeScreen(
                 }
 
                 // Stats: session data + ping (tap ping to re-measure).
-                Spacer(Modifier.height(26.dp))
+                Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.weight(1f),
@@ -650,7 +572,7 @@ fun HomeScreen(
                             Icon(
                                 imageVector = Icons.Filled.ArrowDownward,
                                 contentDescription = null,
-                                tint = if (onYellow) Color.White else Color.White.copy(alpha = 0.85f),
+                                tint = if (darkTheme) Color.White.copy(alpha = 0.85f) else Color.White,
                                 modifier = Modifier.size(17.dp),
                             )
                         }
@@ -714,7 +636,7 @@ fun HomeScreen(
                             Icon(
                                 imageVector = Icons.Filled.SignalCellularAlt,
                                 contentDescription = null,
-                                tint = if (onYellow) Color.White else Color.White.copy(alpha = 0.85f),
+                                tint = if (darkTheme) Color.White.copy(alpha = 0.85f) else Color.White,
                                 modifier = Modifier.size(17.dp),
                             )
                         }
@@ -741,19 +663,19 @@ fun HomeScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 16.sp,
                             ),
-                            color = if (currentPing != null) (if (onYellow) IFoxyInk else IFoxyGreen) else ink,
+                            color = if (currentPing != null) (if (darkTheme) IFoxyGreen else IFoxyInk) else ink,
                         )
                     }
                 }
 
                 // Guardian quota pill (connected, when the account reports one).
                 if (connected && (isUnlimited || quotaRemaining != null || quotaMax != null)) {
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(14.dp))
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterHorizontally)
                             .clip(RoundedCornerShape(50))
-                            .background(Color.White.copy(alpha = 0.38f))
+                            .background(if (darkTheme) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.38f))
                             .padding(horizontal = 18.dp, vertical = 9.dp),
                     ) {
                         Text(
@@ -769,52 +691,12 @@ fun HomeScreen(
                                 fontWeight = FontWeight.Medium,
                                 fontSize = 12.5.sp,
                             ),
-                            color = IFoxyInk.copy(alpha = 0.85f),
+                            color = if (darkTheme) Color.White.copy(alpha = 0.85f) else IFoxyInk.copy(alpha = 0.85f),
                         )
                     }
                 }
 
-                Spacer(Modifier.height(26.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(58.dp)
-                        .clip(RoundedCornerShape(29.dp))
-                        .background(if (connected) IFoxyInk else IFoxyYellow)
-                        .clickable(role = Role.Button, onClick = onOpenServers)
-                        .padding(horizontal = 20.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.LocationOn,
-                            contentDescription = null,
-                            tint = if (connected) Color.White else IFoxyInk,
-                            modifier = Modifier.size(19.dp),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "Select Location",
-                            style = TextStyle(
-                                fontFamily = PoppinsFamily,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.5.sp,
-                            ),
-                            color = if (connected) Color.White else IFoxyInk,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            tint = if (connected) Color.White else IFoxyInk,
-                            modifier = Modifier.size(19.dp),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.weight(1f))
                 Text(
                     "Protected by your Firefox account",
                     style = TextStyle(
@@ -825,7 +707,7 @@ fun HomeScreen(
                     color = muted,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(20.dp))
             }
         }
     }

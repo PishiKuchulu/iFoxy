@@ -4,7 +4,14 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -24,13 +32,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -38,10 +46,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +59,10 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -56,6 +70,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.pishi.ifoxy.BuildConfig
 import com.pishi.ifoxy.data.SettingsStore
+import com.pishi.ifoxy.ui.theme.IFoxyBgDark
+import com.pishi.ifoxy.ui.theme.IFoxyCardDark
+import com.pishi.ifoxy.ui.theme.IFoxyInk
+import com.pishi.ifoxy.ui.theme.IFoxyYellow
+import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -64,6 +83,7 @@ private const val GITHUB_URL = "https://github.com/PishiKuchulu/iFoxy"
 @Composable
 fun SettingsScreen(
     settingsStore: SettingsStore,
+    darkTheme: Boolean,
     onOpenLogs: () -> Unit,
     onSignOut: () -> Unit,
     onBack: () -> Unit,
@@ -249,9 +269,15 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = if (darkTheme) IFoxyBgDark else IFoxyYellow,
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (darkTheme) IFoxyBgDark else IFoxyYellow,
+                    titleContentColor = if (darkTheme) Color.White else IFoxyInk,
+                    navigationIconContentColor = if (darkTheme) Color.White else IFoxyInk,
+                ),
+                title = { Text("Settings", fontFamily = PoppinsFamily, fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -264,9 +290,12 @@ fun SettingsScreen(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SectionLabel("Connection")
+            Spacer(Modifier.height(2.dp))
+            SettingsSection(title = "Connection", darkTheme = darkTheme, initiallyExpanded = true) {
             ListItem(
                 headlineContent = { Text("Verify exit location") },
                 supportingContent = { Text("Check that the tunnel exits in the selected country") },
@@ -287,8 +316,8 @@ fun SettingsScreen(
                 modifier = Modifier.clickable { showMtuDialog = true },
             )
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("DNS")
+            }
+            SettingsSection(title = "DNS", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("Tunnel DNS") },
                 supportingContent = {
@@ -316,8 +345,8 @@ fun SettingsScreen(
                 modifier = Modifier.clickable { showBootstrapDnsDialog = true },
             )
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("Local proxy")
+            }
+            SettingsSection(title = "Local proxy", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("Proxy-only mode") },
                 supportingContent = { Text("Run local proxy servers (SOCKS5 & HTTP), without a VPN interface") },
@@ -365,8 +394,8 @@ fun SettingsScreen(
                 )
             }
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("Split tunneling")
+            }
+            SettingsSection(title = "Split tunneling", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("Excluded apps") },
                 supportingContent = {
@@ -382,8 +411,8 @@ fun SettingsScreen(
                 modifier = Modifier.clickable { showSplitTunnelDialog = true },
             )
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("Advanced")
+            }
+            SettingsSection(title = "Advanced", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("Custom edge address") },
                 supportingContent = { Text(customEdgeAddress.ifBlank { "Not set" }) },
@@ -440,8 +469,8 @@ fun SettingsScreen(
                 )
             }
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("About")
+            }
+            SettingsSection(title = "About", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("View logs") },
                 supportingContent = { Text("Recent connection activity") },
@@ -461,8 +490,8 @@ fun SettingsScreen(
                 },
             )
 
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel("Account")
+            }
+            SettingsSection(title = "Account", darkTheme = darkTheme) {
             Button(
                 onClick = onSignOut,
                 colors = ButtonDefaults.buttonColors(
@@ -477,6 +506,8 @@ fun SettingsScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("Sign out")
             }
+            }
+            Spacer(Modifier.height(4.dp))
         }
     }
 }
@@ -1089,14 +1120,71 @@ private fun SplitTunnelDialog(
     )
 }
 
+/**
+ * One settings category as a brand card whose options open like a menu
+ * when its header is tapped. The nested MaterialTheme re-points the M3
+ * surface colors at the card, so the existing ListItem/Switch rows render
+ * on the card in the app's brand palette (matching the Home screen).
+ */
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-    )
+private fun SettingsSection(
+    title: String,
+    darkTheme: Boolean,
+    initiallyExpanded: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
+    val cardColor = if (darkTheme) IFoxyCardDark else Color.White
+    val inkColor = if (darkTheme) Color.White else IFoxyInk
+    val mutedColor = if (darkTheme) Color.White.copy(alpha = 0.55f) else IFoxyInk.copy(alpha = 0.6f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(cardColor),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = inkColor,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                tint = mutedColor,
+                modifier = Modifier.rotate(if (expanded) 180f else 0f),
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            MaterialTheme(
+                colorScheme = MaterialTheme.colorScheme.copy(
+                    surface = cardColor,
+                    surfaceVariant = cardColor,
+                    onSurface = inkColor,
+                    onSurfaceVariant = mutedColor,
+                ),
+                typography = MaterialTheme.typography,
+                shapes = MaterialTheme.shapes,
+            ) {
+                Column { content() }
+            }
+        }
+    }
 }
 
 @Composable
