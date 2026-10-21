@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">iFoxy</string>
+    <string name="quick_connect">Quick Connect</string>
+    <string name="quick_connect_connected">Connected</string>
+    <string name="quick_connect_connecting">Connecting\u2026</string>
+    <string name="quick_connect_disconnected">Disconnected</string>
+    <string name="quick_connect_widget_desc">iFoxy Quick Connect Widget</string>
+</resources>

@@ -110,6 +110,10 @@ Be aware of these before you rely on iFoxy:
 
 Please do not open public issues for security problems. Report them privately to the maintainers. Details are in [`docs/SECURITY.md`](docs/SECURITY.md).
 
+### iFoxy for Android
+
+This repository also contains **iFoxy for Android** in [`android/`](android/) — the same idea on mobile: a native Kotlin/Jetpack Compose client (based on FoxyVPN by Vauth, MIT) that signs in with a Firefox account and tunnels the whole device over HTTP/2. See [`android/README.md`](android/README.md) for features, build instructions and its changelog.
+
 ---
 
 <a id="فارسی"></a>
@@ -190,6 +194,10 @@ cargo test                 # اجرای تست‌ها
 ### امنیت
 
 مشکلات امنیتی را در Issue عمومی گزارش نکنید. آن‌ها را به‌صورت خصوصی به نگهدارنده‌ها اطلاع دهید. جزئیات در [`docs/SECURITY.md`](docs/SECURITY.md) است.
+
+### iFoxy برای اندروید
+
+نسخه اندروید iFoxy هم در همین مخزن، در پوشه [`android/`](android/) قرار دارد؛ یک کلاینت بومی Kotlin/Jetpack Compose (بر پایه FoxyVPN ساخته Vauth، با مجوز MIT) که با حساب فایرفاکس وارد می‌شود و ترافیک کل دستگاه را از تونل HTTP/2 عبور می‌دهد. جزئیات در [`android/README.md`](android/README.md) است.
 
 </div>
 
