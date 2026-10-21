@@ -73,6 +73,7 @@ import com.pishi.ifoxy.data.RECOMMENDED_COUNTRY_CODE
 import com.pishi.ifoxy.data.ServerListClient
 import com.pishi.ifoxy.data.formatBytes
 import com.pishi.ifoxy.data.model.ConnectionState
+import com.pishi.ifoxy.data.model.countryCodeToEmojiFlag
 import com.pishi.ifoxy.data.model.emojiFlag
 import com.pishi.ifoxy.ui.components.WorldMapLayer
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
@@ -242,16 +243,11 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // README banner (docs/images/logo-horizontal.png) as
-                    // the header logo, on an ink plate so its yellow
-                    // lettering stays readable on the light theme too.
+                    // the header logo — transparent PNG, shown as-is.
                     Image(
                         painter = painterResource(R.drawable.logo_horizontal),
                         contentDescription = "iFoxy",
-                        modifier = Modifier
-                            .height(38.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(IFoxyInk)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.height(34.dp),
                     )
                     Spacer(Modifier.weight(1f))
                     val mode = themeController.mode
@@ -319,35 +315,51 @@ fun HomeScreen(
 
                 // The single location entry point on Home: the current /
                 // last-used server card. Tapping it opens Choose location.
+                // Horizontal layout (flag | name+status | chevron) so no
+                // line can ever be clipped by the card's height.
+                val isRecommended = selectedProxy?.countryCode == RECOMMENDED_COUNTRY_CODE
+                val exitCountryCode = vpnEdgeIp?.countryCode?.takeIf { it.length == 2 }
+                val exitCountryName = exitCountryCode?.let { Locale("", it).displayCountry }
+                val displayFlag = when {
+                    isRecommended && exitCountryCode != null -> countryCodeToEmojiFlag(exitCountryCode)
+                    else -> selectedProxy?.emojiFlag
+                }
+                val displayName = when {
+                    isRecommended && exitCountryName != null -> exitCountryName
+                    isRecommended -> "Recommended"
+                    else -> selectedProxy?.let { it.countryName.ifBlank { it.countryCode } } ?: "No location"
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(92.dp)
+                        .height(84.dp)
                         .clip(RoundedCornerShape(20.dp))
                         .background(cardBg)
                         .clickable(role = Role.Button, onClick = onOpenServers)
-                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                        .padding(horizontal = 16.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (!displayFlag.isNullOrBlank()) {
+                            Text(displayFlag, fontSize = 26.sp)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Public,
+                                contentDescription = null,
+                                tint = ink,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
-                            val flag = selectedProxy?.emojiFlag
-                            if (!flag.isNullOrBlank()) {
-                                Text(flag, fontSize = 20.sp)
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Filled.Public,
-                                    contentDescription = null,
-                                    tint = ink,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-                            Spacer(Modifier.height(6.dp))
                             Text(
-                                selectedProxy?.let { it.countryName.ifBlank { it.countryCode } } ?: "No location",
+                                displayName,
                                 style = TextStyle(
                                     fontFamily = PoppinsFamily,
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 14.sp,
+                                    fontSize = 15.sp,
                                 ),
                                 color = ink,
                                 maxLines = 1,
@@ -502,9 +514,11 @@ fun HomeScreen(
                                 modifier = Modifier.size(15.dp),
                             )
                             Spacer(Modifier.width(4.dp))
-                            val countryLabel = selectedProxy?.countryName?.ifBlank { null }
-                                ?: vpnEdgeIp?.countryCode?.takeIf { it.isNotEmpty() }
-                                    ?.let { Locale("", it).displayCountry }
+                            val countryLabel = if (isRecommended) {
+                                exitCountryName
+                            } else {
+                                selectedProxy?.countryName?.ifBlank { null } ?: exitCountryName
+                            }
                             Text(
                                 listOfNotNull(vpnEdgeIp?.ip, countryLabel).joinToString(" \u00B7 ")
                                     .ifBlank { "Checking\u2026" },

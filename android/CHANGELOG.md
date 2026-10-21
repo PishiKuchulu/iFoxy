@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.10 (versionCode 47) — Home card & logo fixes
+
+- **Header logo:** the README banner is shown as-is (transparent PNG,
+  no plate behind it).
+- **Location card rebuilt horizontally** (flag · name + status ·
+  chevron): the status line ("Last used") could be clipped by the old
+  vertical layout's fixed height; that can no longer happen.
+- **Recommended location shows the real country:** the "Recommended"
+  entry is a pseudo-location (code REC) in the server data. When it is
+  selected, Home now displays the actual exit country and flag resolved
+  from the exit IP once connected (and "Recommended" before that),
+  instead of the pseudo-location's raw label.
+
 ## 1.0.9 (versionCode 46) — UI fixes from on-device testing
 
 - **Theme fixed:** the Home palette now follows the day/night toggle
