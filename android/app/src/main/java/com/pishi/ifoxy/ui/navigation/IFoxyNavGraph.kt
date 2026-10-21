@@ -14,7 +14,7 @@ import com.pishi.ifoxy.ui.screens.SettingsScreen
 import com.pishi.ifoxy.ui.screens.SplashScreen
 import com.pishi.ifoxy.ui.theme.ThemeController
 
-object FoxyRoutes {
+object IFoxyRoutes {
     const val SPLASH = "splash"
     const val LOGIN = "login"
     const val HOME = "home"
@@ -31,37 +31,37 @@ fun IFoxyNavGraph(
     onRequestConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    NavHost(navController = navController, startDestination = FoxyRoutes.SPLASH) {
-        composable(FoxyRoutes.SPLASH) {
+    NavHost(navController = navController, startDestination = IFoxyRoutes.SPLASH) {
+        composable(IFoxyRoutes.SPLASH) {
             SplashScreen(
                 authRepository = app.authRepository,
                 onSignedIn = {
-                    navController.navigate(FoxyRoutes.HOME) { popUpTo(FoxyRoutes.SPLASH) { inclusive = true } }
+                    navController.navigate(IFoxyRoutes.HOME) { popUpTo(IFoxyRoutes.SPLASH) { inclusive = true } }
                 },
                 onNeedsLogin = {
-                    navController.navigate(FoxyRoutes.LOGIN) { popUpTo(FoxyRoutes.SPLASH) { inclusive = true } }
+                    navController.navigate(IFoxyRoutes.LOGIN) { popUpTo(IFoxyRoutes.SPLASH) { inclusive = true } }
                 },
             )
         }
-        composable(FoxyRoutes.LOGIN) {
+        composable(IFoxyRoutes.LOGIN) {
             LoginScreen(
                 authRepository = app.authRepository,
                 onSignedIn = {
-                    navController.navigate(FoxyRoutes.HOME) { popUpTo(FoxyRoutes.LOGIN) { inclusive = true } }
+                    navController.navigate(IFoxyRoutes.HOME) { popUpTo(IFoxyRoutes.LOGIN) { inclusive = true } }
                 },
             )
         }
-        composable(FoxyRoutes.HOME) {
+        composable(IFoxyRoutes.HOME) {
             HomeScreen(
                 app = app,
                 themeController = themeController,
                 onRequestConnect = onRequestConnect,
                 onDisconnect = onDisconnect,
-                onOpenServers = { navController.navigate(FoxyRoutes.SERVERS) },
-                onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
+                onOpenServers = { navController.navigate(IFoxyRoutes.SERVERS) },
+                onOpenSettings = { navController.navigate(IFoxyRoutes.SETTINGS) },
             )
         }
-        composable(FoxyRoutes.SERVERS) {
+        composable(IFoxyRoutes.SERVERS) {
             ServerListScreen(
                 serverListClient = app.serverListClient,
                 proxyStateStore = app.proxyStateStore,
@@ -69,21 +69,21 @@ fun IFoxyNavGraph(
                 onBack = { navController.popBackStack() },
             )
         }
-        composable(FoxyRoutes.SETTINGS) {
+        composable(IFoxyRoutes.SETTINGS) {
             SettingsScreen(
                 settingsStore = app.settingsStore,
-                onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
+                onOpenLogs = { navController.navigate(IFoxyRoutes.LOGS) },
                 onSignOut = {
                     onDisconnect()
                     app.tokenStore.clear()
                     app.settingsStore.clearAccountSession()
                     app.proxyStateStore.clear()
-                    navController.navigate(FoxyRoutes.LOGIN) { popUpTo(0) { inclusive = true } }
+                    navController.navigate(IFoxyRoutes.LOGIN) { popUpTo(0) { inclusive = true } }
                 },
                 onBack = { navController.popBackStack() },
             )
         }
-        composable(FoxyRoutes.LOGS) {
+        composable(IFoxyRoutes.LOGS) {
             LogsScreen(onBack = { navController.popBackStack() })
         }
     }

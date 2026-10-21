@@ -1,25 +1,36 @@
 package com.pishi.ifoxy.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,16 +40,37 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pishi.ifoxy.data.FxaAuthRepository
+import com.pishi.ifoxy.ui.components.WorldMapLayer
+import com.pishi.ifoxy.ui.theme.IFoxyBgDark
+import com.pishi.ifoxy.ui.theme.IFoxyCardDark
+import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
+import com.pishi.ifoxy.ui.theme.IFoxyInk
+import com.pishi.ifoxy.ui.theme.IFoxyNeonOrange
+import com.pishi.ifoxy.ui.theme.IFoxyYellow
+import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import kotlinx.coroutines.launch
 
+private const val FXA_RESET_PASSWORD_URL = "https://accounts.firefox.com/reset_password"
+
+/**
+ * Sign in, per the Penpot design (04): dark brand screen, glowing orange
+ * power mark, Firefox-account form. Auth flow, input sanitising and the
+ * SEC-FX-01 secret handling are unchanged.
+ */
 @Composable
 fun LoginScreen(
     authRepository: FxaAuthRepository,
@@ -54,6 +86,7 @@ fun LoginScreen(
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
 
     BackHandler(enabled = awaitingTwoFactor) {
         authRepository.clearPendingSession()
@@ -94,36 +127,108 @@ fun LoginScreen(
         }
     }
 
+    val fieldColors = TextFieldDefaults.colors(
+        focusedContainerColor = IFoxyCardDark,
+        unfocusedContainerColor = IFoxyCardDark,
+        disabledContainerColor = IFoxyCardDark,
+        focusedIndicatorColor = Color.Transparent,
+        unfocusedIndicatorColor = Color.Transparent,
+        disabledIndicatorColor = Color.Transparent,
+        focusedTextColor = Color.White,
+        unfocusedTextColor = Color.White,
+        cursorColor = IFoxyYellow,
+        focusedLabelColor = Color.White.copy(alpha = 0.6f),
+        unfocusedLabelColor = Color.White.copy(alpha = 0.45f),
+    )
+    val fieldShape = RoundedCornerShape(16.dp)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(IFoxyBgDark)
             .imePadding(),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
+        // Faint static world map behind the header (design 04).
+        WorldMapLayer(
+            color = Color.White.copy(alpha = 0.045f),
+            driftMillis = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(360.dp),
+        )
+
         Column(
             modifier = Modifier
                 .widthIn(max = 520.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Sign in with Firefox", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.padding(top = 8.dp))
+            Spacer(Modifier.height(72.dp))
+
+            // Glowing orange power mark.
+            Box(contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    IFoxyNeonOrange.copy(alpha = 0.4f),
+                                    IFoxyNeonOrange.copy(alpha = 0f),
+                                ),
+                            ),
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape)
+                        .background(IFoxyNeonOrange),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PowerSettingsNew,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(22.dp))
             Text(
-                "iFoxy runs on the free 50 GB of monthly VPN traffic Mozilla includes with a Firefox account. No subscription is required.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Welcome to iFoxy",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 24.sp,
+                ),
+                color = Color.White,
             )
-            Spacer(Modifier.padding(top = 24.dp))
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Sign in with your Firefox account",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 14.sp,
+                ),
+                color = Color.White.copy(alpha = 0.6f),
+            )
+            Spacer(Modifier.height(30.dp))
 
             if (!awaitingTwoFactor) {
-                OutlinedTextField(
+                TextField(
                     value = email,
                     onValueChange = {
                         email = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").lowercase()
                     },
-                    label = { Text("Firefox account email") },
+                    label = { Text("Email") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Email,
@@ -131,12 +236,14 @@ fun LoginScreen(
                         autoCorrectEnabled = false,
                     ),
                     keyboardActions = KeyboardActions(
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                        onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }
                     ),
+                    colors = fieldColors,
+                    shape = fieldShape,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.padding(top = 12.dp))
-                OutlinedTextField(
+                Spacer(Modifier.height(12.dp))
+                TextField(
                     value = password,
                     onValueChange = {
                         password = it.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
@@ -154,31 +261,83 @@ fun LoginScreen(
                             doSubmitLogin()
                         }
                     ),
+                    colors = fieldColors,
+                    shape = fieldShape,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.padding(top = 20.dp))
+                Spacer(Modifier.height(20.dp))
                 Button(
                     onClick = {
                         focusManager.clearFocus()
                         doSubmitLogin()
                     },
                     enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = IFoxyYellow,
+                        contentColor = IFoxyInk,
+                        disabledContainerColor = IFoxyYellow.copy(alpha = 0.4f),
+                        disabledContentColor = IFoxyInk.copy(alpha = 0.6f),
+                    ),
+                    shape = RoundedCornerShape(27.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp),
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
+                            color = IFoxyInk,
                         )
                     } else {
-                        Text("Continue")
+                        Text(
+                            "Sign In",
+                            style = TextStyle(
+                                fontFamily = PoppinsFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.5.sp,
+                            ),
+                        )
                     }
                 }
+
+                TextButton(
+                    onClick = {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FXA_RESET_PASSWORD_URL)))
+                    },
+                ) {
+                    Text(
+                        "Forgot password?",
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.5.sp,
+                        ),
+                        color = IFoxyYellow,
+                    )
+                }
+                Text(
+                    "Two-factor authentication is supported",
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.Normal,
+                        fontSize = 12.sp,
+                    ),
+                    color = Color.White.copy(alpha = 0.4f),
+                )
             } else {
-                Text("Enter the confirmation code sent to your email", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.padding(top = 12.dp))
-                OutlinedTextField(
+                Text(
+                    "Enter the confirmation code sent to your email",
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                    ),
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(14.dp))
+                TextField(
                     value = code,
                     onValueChange = {
                         code = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "")
@@ -195,40 +354,64 @@ fun LoginScreen(
                             doSubmitTwoFactor()
                         }
                     ),
+                    colors = fieldColors,
+                    shape = fieldShape,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.padding(top = 20.dp))
+                Spacer(Modifier.height(20.dp))
                 Button(
                     onClick = {
                         focusManager.clearFocus()
                         doSubmitTwoFactor()
                     },
                     enabled = !isLoading && code.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = IFoxyYellow,
+                        contentColor = IFoxyInk,
+                        disabledContainerColor = IFoxyYellow.copy(alpha = 0.4f),
+                        disabledContentColor = IFoxyInk.copy(alpha = 0.6f),
+                    ),
+                    shape = RoundedCornerShape(27.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp),
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
+                            color = IFoxyInk,
                         )
                     } else {
-                        Text("Verify")
+                        Text(
+                            "Verify",
+                            style = TextStyle(
+                                fontFamily = PoppinsFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.5.sp,
+                            ),
+                        )
                     }
                 }
             }
 
             errorMessage?.let {
-                Spacer(Modifier.padding(top = 12.dp))
+                Spacer(Modifier.height(14.dp))
                 Text(
                     text = it,
-                    color = MaterialTheme.colorScheme.error,
+                    color = IFoxyErrorOnDark,
                     textAlign = TextAlign.Center,
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 8.dp),
                 )
             }
+            Spacer(Modifier.height(32.dp))
         }
     }
 }

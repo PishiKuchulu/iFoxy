@@ -7,6 +7,14 @@
 > FoxyVPN 1.0.7 by Vauth (MIT). Settings were regrouped into consistent
 > categories (Connection · DNS · Local proxy · Split tunneling · Advanced ·
 > About · Account) and the launcher icon now uses the iFoxy fox logo.
+>
+> UI/UX: the Penpot "iFoxy — Screens" design is implemented — brand-yellow
+> connected home and ink-dark disconnected home with the drifting world
+> map (90 s / 120 s seamless loop) and the pulsing neon power halo
+> (alpha 0.35↔0.60, scale 1↔1.06, 2.4 s), dark Choose-location and
+> Sign-in screens, Poppins throughout. All elements are wired to real
+> state (last-used + recommended servers, session bytes, ping, exit IP,
+> Guardian quota); sign-in behaviour and secret handling are unchanged.
 
 Security fixes:
 - The Firefox password and 2FA code are no longer kept in `rememberSaveable`

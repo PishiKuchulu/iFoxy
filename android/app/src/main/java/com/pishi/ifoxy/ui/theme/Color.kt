@@ -5,6 +5,19 @@ import androidx.compose.ui.graphics.Color
 
 val FoxSeed = Color(0xFFFF7139)
 
+// iFoxy design tokens (Penpot "iFoxy — Screens" design system, 2026-10-21).
+// The brand screens (Home, Choose location, Sign in) are drawn with these
+// directly; the Material schemes below keep serving the remaining screens.
+val IFoxyYellow = Color(0xFFFFC21C)
+val IFoxyInk = Color(0xFF1B1C21)
+val IFoxyBgDark = Color(0xFF1D1E24)
+val IFoxyCardDark = Color(0xFF2A2B33)
+val IFoxyNeonOrange = Color(0xFFFF7A1A)
+val IFoxyGreen = Color(0xFF22C55E)
+val IFoxyMapOnYellow = Color(0xFFDE9E00)
+val IFoxyErrorOnDark = Color(0xFFFFB4AB)
+val IFoxyErrorOnYellow = Color(0xFFB3261E)
+
 val md_theme_light_primary = Color(0xFFA03A00)
 val md_theme_light_onPrimary = Color(0xFFFFFFFF)
 val md_theme_light_primaryContainer = Color(0xFFFFDBCB)
