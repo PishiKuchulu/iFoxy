@@ -28,7 +28,8 @@ Security fixes:
   of being widened to all of `firefox.com`.
 - Fail-closed TUN setup: if the IPv6 default route cannot be claimed, the
   connection is refused instead of leaking IPv6 traffic outside the tunnel.
-  Apps can no longer bypass the VPN via `setAllowBypass` on Android 10+.
+  (App bypass of the tunnel remains impossible by default: the VPN Builder
+  only allows it after an explicit `allowBypass()` call, which is never made.)
 - Binding the local proxies to a non-loopback address (open proxy, no
   authentication) now requires an explicit risk confirmation in Settings and
   logs a prominent warning at startup.

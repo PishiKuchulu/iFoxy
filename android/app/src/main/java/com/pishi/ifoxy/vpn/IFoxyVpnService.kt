@@ -1122,10 +1122,10 @@ class IFoxyVpnService : VpnService() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     runCatching { setMetered(false) }
                         .onFailure { AppLogger.d(TAG, "could not mark the tunnel as unmetered: ${it.message}") }
-                    // SEC-FX-04: do not let other apps bypass this VPN by
-                    // binding to the underlying network while it is up.
-                    runCatching { setAllowBypass(false) }
-                        .onFailure { AppLogger.d(TAG, "could not disable VPN bypass: ${it.message}") }
+                    // SEC-FX-04 note: app bypass needs no code here — the
+                    // Builder only permits it after an explicit allowBypass()
+                    // call, which this app never makes, so other apps cannot
+                    // bind around the tunnel by default.
                 }
             }
             .apply {
