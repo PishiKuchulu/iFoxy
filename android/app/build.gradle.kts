@@ -1,3 +1,5 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -29,7 +31,10 @@ val fetchHevSocks5Tunnel = tasks.register<Exec>("fetchHevSocks5Tunnel") {
 
 val verifyHevSocks5Tunnel = tasks.register<Exec>("verifyHevSocks5Tunnel") {
     dependsOn(fetchHevSocks5Tunnel)
-    val captured = java.io.ByteArrayOutputStream()
+    // NOTE: plain ByteArrayOutputStream via import — in a Gradle Kotlin
+    // script `java` resolves to the Java plugin extension, so the fully
+    // qualified `java.io.…` form does not compile here.
+    val captured = ByteArrayOutputStream()
     commandLine("git", "-C", hevSocks5TunnelDir.absolutePath, "rev-parse", "HEAD")
     standardOutput = captured
     isIgnoreExitValue = true
