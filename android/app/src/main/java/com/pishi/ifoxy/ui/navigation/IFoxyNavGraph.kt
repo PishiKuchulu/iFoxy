@@ -1,12 +1,19 @@
 package com.pishi.ifoxy.ui.navigation
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.pishi.ifoxy.IFoxyApp
+import com.pishi.ifoxy.ui.components.AppUpdateController
+import com.pishi.ifoxy.ui.components.AppUpdateDialog
 import com.pishi.ifoxy.ui.screens.HomeScreen
 import com.pishi.ifoxy.ui.screens.LoginScreen
 import com.pishi.ifoxy.ui.screens.LogsScreen
@@ -32,6 +39,9 @@ fun IFoxyNavGraph(
     onRequestConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
+    val updateController = remember { AppUpdateController(app) }
+    LaunchedEffect(Unit) { updateController.checkOnLaunch() }
+    Box(Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = IFoxyRoutes.SPLASH) {
         composable(IFoxyRoutes.SPLASH) {
             SplashScreen(
@@ -74,6 +84,7 @@ fun IFoxyNavGraph(
             SettingsScreen(
                 settingsStore = app.settingsStore,
                 darkTheme = themeController.resolveDark(isSystemInDarkTheme()),
+                updateController = updateController,
                 onOpenLogs = { navController.navigate(IFoxyRoutes.LOGS) },
                 onSignOut = {
                     onDisconnect()
@@ -88,5 +99,7 @@ fun IFoxyNavGraph(
         composable(IFoxyRoutes.LOGS) {
             LogsScreen(onBack = { navController.popBackStack() })
         }
+    }
+    AppUpdateDialog(updateController)
     }
 }

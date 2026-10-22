@@ -70,6 +70,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.pishi.ifoxy.BuildConfig
 import com.pishi.ifoxy.data.SettingsStore
+import com.pishi.ifoxy.ui.components.AppUpdateController
+import com.pishi.ifoxy.ui.components.UpdateUiState
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import com.pishi.ifoxy.ui.theme.IFoxyCardDark
 import com.pishi.ifoxy.ui.theme.IFoxyInk
@@ -84,6 +86,7 @@ private const val GITHUB_URL = "https://github.com/PishiKuchulu/iFoxy"
 fun SettingsScreen(
     settingsStore: SettingsStore,
     darkTheme: Boolean,
+    updateController: AppUpdateController,
     onOpenLogs: () -> Unit,
     onSignOut: () -> Unit,
     onBack: () -> Unit,
@@ -480,6 +483,50 @@ fun SettingsScreen(
             ListItem(
                 headlineContent = { Text("Version") },
                 supportingContent = { Text(BuildConfig.VERSION_NAME) },
+            )
+            ListItem(
+                headlineContent = { Text("App update") },
+                supportingContent = {
+                    val updateState = updateController.state
+                    Text(
+                        when (updateState) {
+                            is UpdateUiState.Available -> "Update available: v${updateState.info.version}"
+                            is UpdateUiState.Checking -> "Checking for updates\u2026"
+                            is UpdateUiState.Downloading -> {
+                                val pct = if (updateState.total > 0) {
+                                    (updateState.downloaded * 100 / updateState.total).toInt()
+                                } else {
+                                    0
+                                }
+                                "Downloading update\u2026 $pct%"
+                            }
+                            is UpdateUiState.ReadyToInstall -> "v${updateState.info.version} ready to install"
+                            is UpdateUiState.UpToDate -> "You're up to date"
+                            is UpdateUiState.Failed -> "Update check failed"
+                            else -> "Check GitHub releases for a newer version"
+                        },
+                    )
+                },
+                trailingContent = {
+                    TextButton(
+                        onClick = {
+                            when (updateController.state) {
+                                is UpdateUiState.Available,
+                                is UpdateUiState.ReadyToInstall,
+                                is UpdateUiState.Failed -> updateController.showDialog()
+                                else -> updateController.check()
+                            }
+                        },
+                    ) {
+                        Text(
+                            when (updateController.state) {
+                                is UpdateUiState.Available -> "Download"
+                                is UpdateUiState.ReadyToInstall -> "Install"
+                                else -> "Check"
+                            },
+                        )
+                    }
+                },
             )
             ListItem(
                 headlineContent = { Text("Source code") },

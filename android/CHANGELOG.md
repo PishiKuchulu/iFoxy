@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.11 (versionCode 48) — in-app updates
+
+- **In-app updater** (same pattern as Anvex/PishiMovie): the app checks
+  this repository's GitHub releases on launch and offers newer versions
+  in a dialog — download with live progress and cancel, then install via
+  FileProvider (with the Android "install unknown apps" consent flow).
+- Settings → About gains an **App update** row with the live status and
+  a manual Check / Download / Install action.
+- Release selection is monorepo-aware: only strict `vX.Y.Z` releases
+  that carry an Android APK asset count (Windows-only tags and the
+  combined releases' `.exe` assets are ignored). Version comparison and
+  selection are unit-tested.
+- Note: 1.0.10 and earlier have no updater — install 1.0.11 manually
+  once; updates after that arrive in-app.
+
 ## 1.0.10 (versionCode 47) — Home card & logo fixes
 
 - **Header logo:** the README banner is shown as-is (transparent PNG,
