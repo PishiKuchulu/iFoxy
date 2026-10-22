@@ -19,6 +19,11 @@ Jetpack Compose (Material 3) UI.*
 
 </div>
 
+> This is the Android half of the **iFoxy monorepo** — the Windows client
+> (Rust) lives at the [repository root](https://github.com/PishiKuchulu/iFoxy).
+> Version history: [CHANGELOG.md](CHANGELOG.md). Current release: see the
+> [Releases](https://github.com/PishiKuchulu/iFoxy/releases) page.
+
 <br>
 
 ## 🔎 Features
@@ -35,6 +40,7 @@ Jetpack Compose (Material 3) UI.*
 - **Proxy-only mode**
 - **Dark / light / follow-system theme**
 - **Exit verification**
+- **Guardian quota display**
 - **In-app logs**
 
 <br>
@@ -52,21 +58,14 @@ Jetpack Compose (Material 3) UI.*
 
 <br>
 
-## 📸 Screenshots
-<div align="center">
-  <img src="https://i.ibb.co/cK1L8wGk/90a25df7e3c6.jpg" alt="Screenshot 1" width="30%">
-  <img src="https://i.ibb.co/tMff3B7C/198e4f622a58.jpg" alt="Screenshot 2" width="30%">
-  <img src="https://i.ibb.co/G3V0CwCb/8524a888adee.jpg" alt="Screenshot 3" width="30%">
-</div>
-
-<br>
-
 ## 🚀 How to use?
 
 1. **Get a Firefox account.** If you do not have one, create it for free at
    [accounts.firefox.com](https://accounts.firefox.com/signup).
-2. **Install the APK** from the [Releases](https://github.com/pishi/ifoxy/releases)
-   page.
+2. **Install the APK** — download `iFoxy-v<version>.apk` from the
+   [Releases](https://github.com/PishiKuchulu/iFoxy/releases) page. Release
+   APKs are signed with the project key (certificate SHA-256:
+   `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`).
 3. **Sign in** with that account's email and password.
 4. **Pick a location** and tap the power button.
 
@@ -90,8 +89,8 @@ allowance is used up for the month, connections stop working until it resets.
 ## ⚙️ Build
 * #### Clone Repository:
 ```bash
-git clone https://github.com/pishi/ifoxy.git
-cd ifoxy
+git clone https://github.com/PishiKuchulu/iFoxy.git
+cd iFoxy/android
    ```
 * #### Build and Install:
 ```bash
@@ -100,13 +99,6 @@ cd ifoxy
 The Gradle wrapper is committed; do not substitute a system Gradle. The
 native tun2socks dependency (hev-socks5-tunnel 2.17.1) is fetched on first
 build and verified against a pinned commit before it is compiled.
-
-<br>
-
-### 📝 To-Do List
-- [x] Improve stability.
-- [x] Better Logo.
-- [ ] HTTP/3 implementation (Not Planned Yet).
 
 <br>
 

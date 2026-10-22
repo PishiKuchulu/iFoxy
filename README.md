@@ -2,14 +2,17 @@
 
 <img src="docs/images/logo-horizontal.png" alt="iFoxy" width="360" />
 
-# iFoxy for Windows
+# iFoxy
 
-**A native Windows VPN client written in Rust.**
-One binary. A real WebView2 interface. A userspace TCP/IP stack that tunnels your traffic over HTTP/2.
+**Native VPN clients for Windows and Android — one Firefox account, two native apps.**
+The Windows client is a single Rust binary with a real WebView2 interface and a userspace TCP/IP stack. The Android client is a native Kotlin / Jetpack Compose app. Both tunnel your traffic over HTTP/2.
 
 [![Build Windows EXE](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml/badge.svg)](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml)
+[![Android CI](https://github.com/PishiKuchulu/iFoxy/actions/workflows/android-ci.yml/badge.svg)](https://github.com/PishiKuchulu/iFoxy/actions/workflows/android-ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)
+![Kotlin](https://img.shields.io/badge/Kotlin-purple?logo=kotlin)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue?logo=windows)
+![Android](https://img.shields.io/badge/Android-8.0%2B-green?logo=android)
 ![Status](https://img.shields.io/badge/status-experimental-yellow)
 
 [English](#english) · [فارسی](#فارسی)
@@ -26,7 +29,11 @@ One binary. A real WebView2 interface. A userspace TCP/IP stack that tunnels you
 
 ### What is iFoxy?
 
-iFoxy is a desktop VPN client for Windows. It has two ways to protect your traffic:
+iFoxy is one project with two native clients that share the same idea: sign in with a Firefox account and tunnel traffic over HTTP/2 CONNECT through Mozilla's Guardian/Firefox VPN edge. The Windows client lives at the root of this repository; the Android client lives in [`android/`](android/).
+
+### iFoxy for Windows
+
+The Windows client has two ways to protect your traffic:
 
 - **Proxy Only.** The default mode. It starts a local proxy and points the Windows system proxy at it. No driver is needed.
 - **Full System.** Creates a virtual network adapter with [Wintun](https://www.wintun.net/) and captures IPv4 traffic at layer 3. Every TCP connection and DNS query on the machine goes through the tunnel. This mode needs administrator rights.
@@ -45,9 +52,14 @@ Everything runs inside a single `ifoxy_app.exe`. The interface is HTML, CSS and 
 
 ### Download
 
-Go to the [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) tab and open the latest successful run. Download the `ifoxy_app-windows-x64` artifact. Each build also includes a `.sha256` file, so you can check the integrity of the download.
+Tagged versions are published on the [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) page. Since v1.0.8, each release contains **both** clients:
 
-Tagged versions (for example `v0.1.0`) are published on the [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) page automatically.
+- **Windows:** `ifoxy_app.exe`, with an `ifoxy_app.exe.sha256` file next to it so you can verify the download.
+- **Android:** `iFoxy-v<version>.apk` (Android 8.0 or newer), signed with the project release key. Signing certificate SHA-256: `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`.
+
+The latest release is [**v1.0.10**](https://github.com/PishiKuchulu/iFoxy/releases/tag/v1.0.10).
+
+For the newest Windows build between releases, go to the [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) tab, open the latest successful run of *Build Windows EXE* and download the `ifoxy_app-windows-x64` artifact.
 
 ### Build it yourself
 
@@ -112,7 +124,15 @@ Please do not open public issues for security problems. Report them privately to
 
 ### iFoxy for Android
 
-This repository also contains **iFoxy for Android** in [`android/`](android/) — the same idea on mobile: a native Kotlin/Jetpack Compose client (based on FoxyVPN by Vauth, MIT) that signs in with a Firefox account and tunnels the whole device over HTTP/2. See [`android/README.md`](android/README.md) for features, build instructions and its changelog.
+**iFoxy for Android** lives in [`android/`](android/) — the same idea on mobile: a native Kotlin / Jetpack Compose client (based on FoxyVPN by Vauth, MIT) that signs in with a Firefox account (2FA supported) and tunnels the whole device over HTTP/2.
+
+- Full-device TUN via hev-socks5-tunnel, plus a proxy-only mode (local SOCKS5/HTTP)
+- Split tunneling, in-tunnel DNS over HTTPS and bootstrap resolver choices
+- Upstream proxy chaining, TLS fragmentation, custom MTU, exit-location verification
+- Guardian quota display, in-app logs, day / night / follow-system themes
+- Hardened release line (current: **v1.0.10**) — see [`android/CHANGELOG.md`](android/CHANGELOG.md)
+
+Download the signed APK from the [Releases](https://github.com/PishiKuchulu/iFoxy/releases) page as described above. Features, build instructions and limitations are in [`android/README.md`](android/README.md).
 
 ---
 
@@ -126,7 +146,11 @@ This repository also contains **iFoxy for Android** in [`android/`](android/) �
 
 ### iFoxy چیست؟
 
-iFoxy یک کلاینت VPN دسکتاپ برای ویندوز است. دو روش برای محافظت از ترافیک دارد:
+پروژه iFoxy دو کلاینت بومی دارد که یک ایده را دنبال می‌کنند: با حساب فایرفاکس وارد می‌شوید و ترافیک از طریق HTTP/2 CONNECT و لبه Guardian/Firefox VPN موزیلا تونل می‌شود. کلاینت ویندوز در ریشه همین مخزن است و کلاینت اندروید در پوشه [`android/`](android/) قرار دارد.
+
+### iFoxy برای ویندوز
+
+کلاینت ویندوز دو روش برای محافظت از ترافیک دارد:
 
 - **فقط پروکسی (Proxy Only).** حالت پیش‌فرض. یک پروکسی محلی راه می‌اندازد و پروکسی سیستم ویندوز را به آن وصل می‌کند. به درایور اضافی نیاز ندارد.
 - **تونل کامل (Full System).** با [Wintun](https://www.wintun.net/) یک آداپتور شبکه مجازی می‌سازد و ترافیک IPv4 را در لایه ۳ می‌گیرد. در این حالت تمام اتصال‌های TCP و درخواست‌های DNS سیستم از تونل عبور می‌کنند. این حالت به دسترسی Administrator نیاز دارد.
@@ -145,9 +169,14 @@ iFoxy یک کلاینت VPN دسکتاپ برای ویندوز است. دو رو
 
 ### دانلود
 
-به تب [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) بروید و آخرین اجرای موفق را باز کنید. فایل `ifoxy_app-windows-x64` را دانلود کنید. همراه هر بیلد یک فایل `.sha256` هم هست تا بتوانید صحت فایل را بررسی کنید.
+نسخه‌های تگ‌خورده در صفحه [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) منتشر می‌شوند. از نسخه v1.0.8 به بعد، هر ریلیز شامل **هر دو** کلاینت است:
 
-نسخه‌هایی که تگ می‌خورند (مثلاً `v0.1.0`) خودکار در صفحه [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) منتشر می‌شوند.
+- **ویندوز:** فایل `ifoxy_app.exe` همراه با `ifoxy_app.exe.sha256` تا بتوانید صحت دانلود را بررسی کنید.
+- **اندروید:** فایل `iFoxy-v<version>.apk` (اندروید ۸٫۰ یا جدیدتر) که با کلید ریلیز پروژه امضا شده است. اثر انگشت گواهی امضا (SHA-256): `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`
+
+آخرین نسخه [**v1.0.10**](https://github.com/PishiKuchulu/iFoxy/releases/tag/v1.0.10) است.
+
+برای تازه‌ترین بیلد ویندوز بین ریلیزها، به تب [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) بروید، آخرین اجرای موفق *Build Windows EXE* را باز کنید و آرتیفکت `ifoxy_app-windows-x64` را دانلود کنید.
 
 ### خودتان بسازید
 
@@ -197,7 +226,15 @@ cargo test                 # اجرای تست‌ها
 
 ### iFoxy برای اندروید
 
-نسخه اندروید iFoxy هم در همین مخزن، در پوشه [`android/`](android/) قرار دارد؛ یک کلاینت بومی Kotlin/Jetpack Compose (بر پایه FoxyVPN ساخته Vauth، با مجوز MIT) که با حساب فایرفاکس وارد می‌شود و ترافیک کل دستگاه را از تونل HTTP/2 عبور می‌دهد. جزئیات در [`android/README.md`](android/README.md) است.
+نسخه اندروید iFoxy در پوشه [`android/`](android/) همین مخزن قرار دارد؛ یک کلاینت بومی Kotlin/Jetpack Compose (بر پایه FoxyVPN ساخته Vauth، با مجوز MIT) که با حساب فایرفاکس (با پشتیبانی از تأیید دومرحله‌ای) وارد می‌شود و ترافیک کل دستگاه را از تونل HTTP/2 عبور می‌دهد.
+
+- تونل کامل دستگاه با hev-socks5-tunnel، به‌علاوه حالت فقط پروکسی (SOCKS5/HTTP محلی)
+- تونل‌بندی تقسیم‌شده (Split tunneling)، DNS داخل تونل با DoH و انتخاب‌های resolver راه‌انداز
+- زنجیره پروکسی بالادستی، قطعه‌بندی TLS، MTU سفارشی و بررسی موقعیت خروجی
+- نمایش سهمیه Guardian، لاگ داخل برنامه و تم‌های روز / شب / دنبال‌کردن سیستم
+- خط ریلیز سخت‌سازی‌شده (نسخه فعلی: **v1.0.10**) — جزئیات در [`android/CHANGELOG.md`](android/CHANGELOG.md)
+
+دانلود APK امضاشده از صفحه [Releases](https://github.com/PishiKuchulu/iFoxy/releases) انجام می‌شود (بخش دانلود در بالا). ویژگی‌ها، روش ساخت و محدودیت‌ها در [`android/README.md`](android/README.md) آمده است.
 
 </div>
 
@@ -205,6 +242,6 @@ cargo test                 # اجرای تست‌ها
 
 <div align="center">
 
-<img src="docs/images/fox-icon.png" alt="iFoxy fox" width="32" /><br/>Made with Rust
+<img src="docs/images/fox-icon.png" alt="iFoxy fox" width="32" /><br/>Made with Rust & Kotlin
 
 </div>
