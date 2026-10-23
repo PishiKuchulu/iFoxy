@@ -4,10 +4,14 @@ use crate::service::vpn_service::{ConnectionMode, ConnectionState, ServiceError}
 use crate::service::watchdog::TokenRenewalWorker;
 use crate::tunnel::h2_session::H2UpstreamSession;
 use crate::vpn::local_proxy::{LocalProxyServer, DEFAULT_LOCAL_PROXY_PORT};
-use crate::vpn::packet_pump::PacketPump;
+#[cfg(target_os = "linux")]
+use crate::vpn::linux_tun::LinuxTunDevice;
+use crate::vpn::packet_pump::{PacketPump, TunDeviceOps};
 use crate::vpn::routing::{RouteGuard, RouteManager};
 use crate::vpn::system_proxy::SystemProxyGuard;
-use crate::vpn::wintun_adapter::{WintunDevice, DEFAULT_ADAPTER_NAME, DEFAULT_WINTUN_IP};
+use crate::vpn::wintun_adapter::DEFAULT_WINTUN_IP;
+#[cfg(windows)]
+use crate::vpn::wintun_adapter::{WintunDevice, DEFAULT_ADAPTER_NAME};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -26,6 +30,23 @@ pub enum SupervisionEvent {
     /// watcher started in `perform_connect_task` (S-5: the actor handled
     /// network changes but nothing ever produced the event).
     NetworkChanged,
+}
+
+/// Create the OS tunnel device for Full mode (Wintun on Windows, TUN on
+/// Linux), returned behind the pump's device trait.
+fn create_tun_device() -> Result<Arc<dyn TunDeviceOps>, ServiceError> {
+    #[cfg(windows)]
+    {
+        let device = WintunDevice::create_or_open(DEFAULT_ADAPTER_NAME, DEFAULT_WINTUN_IP)
+            .map_err(|e| ServiceError::Vpn(format!("Wintun error: {:?}", e)))?;
+        Ok(Arc::new(device))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let device = LinuxTunDevice::create_or_open(DEFAULT_WINTUN_IP)
+            .map_err(|e| ServiceError::Vpn(format!("TUN error: {:?}", e)))?;
+        Ok(Arc::new(device))
+    }
 }
 
 pub enum ServiceCommand {
@@ -567,30 +588,28 @@ impl StateMachineActor {
                     )?,
                 };
 
-                let device = WintunDevice::create_or_open(DEFAULT_ADAPTER_NAME, DEFAULT_WINTUN_IP)
-                    .map_err(|e| ServiceError::Vpn(format!("Wintun error: {:?}", e)))?;
-                let device = Arc::new(device);
+                let device = create_tun_device()?;
 
                 let rg = RouteManager::install_vpn_routes(
                     edge_ipv4,
                     physical_gw,
                     physical_if_idx,
-                    device.ip,
-                    device.adapter_index,
+                    device.ip(),
+                    device.adapter_index(),
                 )
                 .map_err(|e| ServiceError::Vpn(format!("Route error: {:?}", e)))?;
                 route_guard = Some(rg);
 
-                // Native WFP Kill Switch (R-8)
-                let mut ksg = crate::vpn::killswitch::KillSwitchGuard::new(Arc::new(
-                    crate::vpn::killswitch::WindowsFirewallBackend::new(),
-                ));
+                // Native kill switch (WFP on Windows, iptables on Linux) (R-8)
+                let mut ksg = crate::vpn::killswitch::KillSwitchGuard::new(
+                    crate::vpn::killswitch::platform_firewall_backend(),
+                );
                 let policy = crate::vpn::killswitch::KillSwitchPolicy {
                     kill_switch_enabled: true,
                     block_ipv6_leaks: true,
                     edge_ip: Some(edge_ipv4),
-                    wintun_if_index: Some(device.adapter_index),
-                    wintun_local_ip: Some(device.ip),
+                    wintun_if_index: Some(device.adapter_index()),
+                    wintun_local_ip: Some(device.ip()),
                 };
                 // A kill switch that silently fails to install defeats the
                 // whole point of Full mode (fail-closed): the review found
@@ -610,8 +629,7 @@ impl StateMachineActor {
             ConnectionMode::ProxyOnly => {
                 let proxy = LocalProxyServer::new();
                 let proxy_upstream = h2_session.clone();
-                let proxy_handle = proxy.start(DEFAULT_LOCAL_PROXY_PORT, proxy_upstream);
-                tracker.track(proxy_handle);
+                proxy.start(DEFAULT_LOCAL_PROXY_PORT, proxy_upstream);
                 local_proxy = Some(proxy);
 
                 let spg = SystemProxyGuard::enable(DEFAULT_LOCAL_PROXY_PORT)
@@ -628,9 +646,9 @@ impl StateMachineActor {
             let net_sup = supervision_tx.clone();
             tracker.spawn(async move {
                 let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<()>(16);
-                let _sub = crate::vpn::iphlpapi::subscribe_route_changes(notify_tx).ok();
+                let _sub = crate::vpn::routing::platform_subscribe_route_changes(notify_tx);
 
-                let last = crate::vpn::iphlpapi::native_get_best_route(watch_edge).ok();
+                let last = crate::vpn::routing::platform_best_route(watch_edge);
                 let mut pending: Option<Option<(std::net::Ipv4Addr, u32)>> = None;
                 let mut interval = tokio::time::interval(Duration::from_secs(5));
                 interval.tick().await;
@@ -641,7 +659,7 @@ impl StateMachineActor {
                             // Immediate notification from Windows NotifyRouteChange2.
                             // 500ms debounce to allow route table stabilization.
                             tokio::time::sleep(Duration::from_millis(500)).await;
-                            let now = crate::vpn::iphlpapi::native_get_best_route(watch_edge).ok();
+                            let now = crate::vpn::routing::platform_best_route(watch_edge);
                             if now != last {
                                 tracing::warn!("Physical route to edge changed (via NotifyRouteChange2): {:?} -> {:?}", last, now);
                                 let _ = net_sup.send(SupervisionEvent::NetworkChanged).await;
@@ -649,7 +667,7 @@ impl StateMachineActor {
                             }
                         }
                         _ = interval.tick() => {
-                            let now = crate::vpn::iphlpapi::native_get_best_route(watch_edge).ok();
+                            let now = crate::vpn::routing::platform_best_route(watch_edge);
                             if now == last {
                                 pending = None;
                             } else if pending == Some(now) {
