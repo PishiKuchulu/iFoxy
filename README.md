@@ -29,16 +29,16 @@ The Windows client is a single Rust binary with a real WebView2 interface and a 
 
 ### What is iFoxy?
 
-iFoxy is one project with two native clients that share the same idea: sign in with a Firefox account and tunnel traffic over HTTP/2 CONNECT through Mozilla's Guardian/Firefox VPN edge. The Windows client lives at the root of this repository; the Android client lives in [`android/`](android/).
+iFoxy is one project with native clients that share the same idea: sign in with a Firefox account and tunnel traffic over HTTP/2 CONNECT through Mozilla's Guardian/Firefox VPN edge. The desktop client (Windows and Linux) lives at the root of this repository; the Android client lives in [`android/`](android/).
 
-### iFoxy for Windows
+### iFoxy for desktop (Windows & Linux)
 
-The Windows client has two ways to protect your traffic:
+The desktop client has two ways to protect your traffic:
 
-- **Proxy Only.** The default mode. It starts a local proxy and points the Windows system proxy at it. No driver is needed.
-- **Full System.** Creates a virtual network adapter with [Wintun](https://www.wintun.net/) and captures IPv4 traffic at layer 3. Every TCP connection and DNS query on the machine goes through the tunnel. This mode needs administrator rights.
+- **Proxy Only.** The default mode. It starts a local proxy and points the system proxy at it (Windows registry / GNOME `gsettings`). No driver is needed.
+- **Full System.** Creates a virtual network adapter ([Wintun](https://www.wintun.net/) on Windows, a `/dev/net/tun` device on Linux) and captures IPv4 traffic at layer 3. Every TCP connection and DNS query on the machine goes through the tunnel. This mode needs administrator rights (root via pkexec on Linux), and a kill switch (WFP on Windows, iptables on Linux) blocks everything outside the tunnel while it is active.
 
-Everything runs inside a single `ifoxy_app.exe`. The interface is HTML, CSS and vanilla JavaScript rendered by Microsoft Edge WebView2, with no heavy frontend framework.
+Everything runs inside a single binary. The interface is HTML, CSS and vanilla JavaScript rendered by Microsoft Edge WebView2 on Windows and WebKitGTK on Linux, with no heavy frontend framework.
 
 ### Highlights
 
@@ -52,9 +52,10 @@ Everything runs inside a single `ifoxy_app.exe`. The interface is HTML, CSS and 
 
 ### Download
 
-Tagged versions are published on the [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) page. Since v1.0.8, each release contains **both** clients:
+Tagged versions are published on the [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) page. Since v1.0.8, each release contains **all** clients:
 
 - **Windows:** `ifoxy_app.exe`, with an `ifoxy_app.exe.sha256` file next to it so you can verify the download.
+- **Linux:** `ifoxy-linux-x86_64.tar.gz` (the `ifoxy_app` binary plus `install-linux.sh`), with an `ifoxy-linux-x86_64.tar.gz.sha256` file next to it. Runtime needs: WebKitGTK 4.1, iproute2 and iptables.
 - **Android:** `iFoxy-v<version>.apk` (Android 8.0 or newer), signed with the project release key. Signing certificate SHA-256: `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`.
 
 The latest release is [**v1.0.10**](https://github.com/PishiKuchulu/iFoxy/releases/tag/v1.0.10).
@@ -146,35 +147,36 @@ Download the signed APK from the [Releases](https://github.com/PishiKuchulu/iFox
 
 ### iFoxy چیست؟
 
-پروژه iFoxy دو کلاینت بومی دارد که یک ایده را دنبال می‌کنند: با حساب فایرفاکس وارد می‌شوید و ترافیک از طریق HTTP/2 CONNECT و لبه Guardian/Firefox VPN موزیلا تونل می‌شود. کلاینت ویندوز در ریشه همین مخزن است و کلاینت اندروید در پوشه [`android/`](android/) قرار دارد.
+پروژه iFoxy دو کلاینت بومی دارد که یک ایده را دنبال می‌کنند: با حساب فایرفاکس وارد می‌شوید و ترافیک از طریق HTTP/2 CONNECT و لبه Guardian/Firefox VPN موزیلا تونل می‌شود. کلاینت دسکتاپ (ویندوز و لینوکس) در ریشه همین مخزن است و کلاینت اندروید در پوشه [`android/`](android/) قرار دارد.
 
-### iFoxy برای ویندوز
+### iFoxy برای دسکتاپ (ویندوز و لینوکس)
 
-کلاینت ویندوز دو روش برای محافظت از ترافیک دارد:
+کلاینت دسکتاپ دو روش برای محافظت از ترافیک دارد:
 
-- **فقط پروکسی (Proxy Only).** حالت پیش‌فرض. یک پروکسی محلی راه می‌اندازد و پروکسی سیستم ویندوز را به آن وصل می‌کند. به درایور اضافی نیاز ندارد.
-- **تونل کامل (Full System).** با [Wintun](https://www.wintun.net/) یک آداپتور شبکه مجازی می‌سازد و ترافیک IPv4 را در لایه ۳ می‌گیرد. در این حالت تمام اتصال‌های TCP و درخواست‌های DNS سیستم از تونل عبور می‌کنند. این حالت به دسترسی Administrator نیاز دارد.
+- **فقط پروکسی (Proxy Only).** حالت پیش‌فرض. یک پروکسی محلی راه می‌اندازد و پروکسی سیستم را به آن وصل می‌کند (در ویندوز از طریق رجیستری و در لینوکس از طریق تنظیمات GNOME). به درایور اضافی نیاز ندارد.
+- **تونل کامل (Full System).** یک آداپتور شبکه مجازی می‌سازد (در ویندوز [Wintun](https://www.wintun.net/) و در لینوکس یک دیوایس ‎/dev/net/tun‎) و ترافیک IPv4 را در لایه ۳ می‌گیرد. در این حالت تمام اتصال‌های TCP و درخواست‌های DNS سیستم از تونل عبور می‌کنند و یک Kill Switch (در ویندوز WFP و در لینوکس iptables) جلوی نشت ترافیک بیرون از تونل را می‌گیرد. این حالت به دسترسی Administrator در ویندوز و root (از طریق pkexec) در لینوکس نیاز دارد.
 
-همه‌چیز داخل یک فایل `ifoxy_app.exe` است. رابط کاربری با HTML، CSS و JavaScript ساده نوشته شده و توسط WebView2 مایکروسافت (همان موتور Edge) نمایش داده می‌شود. فریم‌ورک سنگین فرانت‌اند ندارد.
+همه‌چیز داخل یک فایل اجرایی واحد است. رابط کاربری با HTML، CSS و JavaScript ساده نوشته شده و در ویندوز توسط WebView2 مایکروسافت (همان موتور Edge) و در لینوکس توسط WebKitGTK نمایش داده می‌شود. فریم‌ورک سنگین فرانت‌اند ندارد.
 
 ### ویژگی‌های برجسته
 
 - 🧱 **پشته TCP در فضای کاربر.** یک ماشین حالت کامل TCP داخل برنامه اجرا می‌شود. شامل actor برای هر جریان، صف بازسازی بسته‌ها، حذف بسته‌های تکراری و هم‌پوشان، fast retransmit، پیگیری پنجره و بستن نیم‌طرفه FIN است.
 - 🌐 **انتقال HTTP/2 CONNECT.** ترافیک روی جریان‌های رمزشده HTTP/2 چندمولتی‌پلکس می‌شود. این روش در شبکه‌هایی با محدودیت شدید هم خوب کار می‌کند.
-- 🔐 **اطلاعات محرمانه محلی و رمزشده.** اعتبارنامه‌ها با DPAPI ویندوز و با آنتروپی مخصوص کاربر محافظت می‌شوند. متن ساده هرگز روی دیسک نوشته نمی‌شود و توکن‌های داخل حافظه بعد از استفاده پاک می‌شوند.
+- 🔐 **اطلاعات محرمانه محلی و رمزشده.** اعتبارنامه‌ها در ویندوز با DPAPI و آنتروپی مخصوص کاربر و در لینوکس با رمزنگاری ChaCha20-Poly1305 و یک کلید مخصوص کاربر (با دسترسی 0600) محافظت می‌شوند. متن ساده هرگز روی دیسک نوشته نمی‌شود و توکن‌های داخل حافظه بعد از استفاده پاک می‌شوند.
 - 🛡️ **API کنترل مقاوم‌سازی‌شده.** API محلی با توکن جلسه، بررسی سختگیرانه Host، مسدود کردن درخواست‌های cross-origin، محدودیت حجم داده، timeout و Content-Security-Policy محافظت می‌شود.
-- 🧾 **بازیابی بعد از کرش.** یک journal در مسیر `%APPDATA%\iFoxy\` ذخیره می‌شود و مسیرها و تنظیمات پروکسی را بعد از خروج ناگهانی برمی‌گرداند.
+- 🧾 **بازیابی بعد از کرش.** یک journal در مسیر `%APPDATA%\iFoxy\` در ویندوز و `~/.config/iFoxy/` در لینوکس ذخیره می‌شود و مسیرها و تنظیمات پروکسی را بعد از خروج ناگهانی برمی‌گرداند.
 - 🧹 **لاگ با حذف اطلاعات حساس.** فایل لاگ به‌صورت خودکار توکن‌ها، رمزها و اسرار جلسه را پنهان می‌کند.
-- 🚫 **جلوگیری از نشت ترافیک (در حال توسعه).** Kill Switch مبتنی بر WFP نوشته شده، اما هنوز روی یک ویندوز واقعی تأیید نشده است. جزئیات را در بخش وضعیت پروژه ببینید.
+- 🚫 **جلوگیری از نشت ترافیک.** حالت تونل کامل یک Kill Switch دارد که در ویندوز روی WFP و در لینوکس روی iptables پیاده‌سازی شده و تا وقتی تونل فعال است همه ترافیک بیرون از تونل را مسدود می‌کند.
 
 ### دانلود
 
 نسخه‌های تگ‌خورده در صفحه [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) منتشر می‌شوند. از نسخه v1.0.8 به بعد، هر ریلیز شامل **هر دو** کلاینت است:
 
 - **ویندوز:** فایل `ifoxy_app.exe` همراه با `ifoxy_app.exe.sha256` تا بتوانید صحت دانلود را بررسی کنید.
+- **لینوکس:** فایل `ifoxy-linux-x86_64.tar.gz` (شامل باینری `ifoxy_app` و اسکریپت `install-linux.sh`) همراه با `ifoxy-linux-x86_64.tar.gz.sha256`. پیش‌نیازهای اجرا: کتابخانه WebKitGTK 4.1 و بسته‌های iproute2 و iptables.
 - **اندروید:** فایل `iFoxy-v<version>.apk` (اندروید ۸٫۰ یا جدیدتر) که با کلید ریلیز پروژه امضا شده است. اثر انگشت گواهی امضا (SHA-256): `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`
 
-آخرین نسخه [**v1.0.10**](https://github.com/PishiKuchulu/iFoxy/releases/tag/v1.0.10) است.
+آخرین نسخه را از [**صفحه ریلیزها**](https://github.com/PishiKuchulu/iFoxy/releases/latest) بگیرید.
 
 برای تازه‌ترین بیلد ویندوز بین ریلیزها، به تب [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) بروید، آخرین اجرای موفق *Build Windows EXE* را باز کنید و آرتیفکت `ifoxy_app-windows-x64` را دانلود کنید.
 

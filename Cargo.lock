@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "ifoxy-windows"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1238,6 +1238,7 @@ dependencies = [
  "hmac",
  "http",
  "ifoxy-windows",
+ "libc",
  "pbkdf2",
  "rand 0.8.8",
  "rcgen",
