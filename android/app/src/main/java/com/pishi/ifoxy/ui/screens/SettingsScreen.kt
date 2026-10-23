@@ -89,7 +89,6 @@ import kotlinx.coroutines.withContext
 
 private const val GITHUB_URL = "https://github.com/PishiKuchulu/iFoxy"
 
-@Composable
 private fun accountQuotaText(account: StoredAccount): String = when {
     account.isUnlimited -> "Unlimited data"
     account.exhausted || account.quotaRemaining == 0L -> "Quota exhausted"
@@ -99,6 +98,7 @@ private fun accountQuotaText(account: StoredAccount): String = when {
     else -> "Quota not checked yet"
 }
 
+@Composable
 fun SettingsScreen(
     settingsStore: SettingsStore,
     darkTheme: Boolean,

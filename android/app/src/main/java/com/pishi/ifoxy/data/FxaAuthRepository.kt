@@ -216,8 +216,9 @@ class FxaAuthRepository(
         tokenStore.saveAuth(auth)
         // File the account in the multi-account vault (it becomes active).
         val loginEmail = tokenStore.pendingLoginEmail
-        if (accountStore != null && loginEmail != null) {
-            runCatching { accountStore.upsert(loginEmail, auth) }
+        val vault = accountStore
+        if (vault != null && loginEmail != null) {
+            runCatching { vault.upsert(loginEmail, auth) }
                 .onFailure { AppLogger.w(TAG, "could not file the account in the vault", it) }
         }
         tokenStore.pendingLoginEmail = null
