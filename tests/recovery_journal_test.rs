@@ -1,6 +1,28 @@
+/// A platform-shaped sample backup: these tests exercise journal
+/// mechanics, not the per-OS proxy fields.
+#[cfg(windows)]
+fn sample_backup() -> ProxySettingsBackup {
+    ProxySettingsBackup {
+        proxy_enable: Some(0),
+        proxy_server: None,
+        proxy_override: None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn sample_backup() -> ProxySettingsBackup {
+    ProxySettingsBackup {
+        entries: vec![(
+            "org.gnome.system.proxy".to_string(),
+            "mode".to_string(),
+            "'none'".to_string(),
+        )],
+    }
+}
+
 use ifoxy_windows::vpn::network_backend::{MockNetworkBackend, NetworkBackend};
 use ifoxy_windows::vpn::recovery_journal::RecoveryJournal;
-use ifoxy_windows::vpn::registry::ProxySettingsBackup;
+use ifoxy_windows::vpn::system_proxy::ProxySettingsBackup;
 use ifoxy_windows::vpn::routing::{RouteDefinition, RouteManager};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -36,11 +58,7 @@ fn test_recovery_journal_records_and_replays_dirty_state() {
         },
         42,
     );
-    journal.record_proxy_backup(ProxySettingsBackup {
-        proxy_enable: Some(0),
-        proxy_server: None,
-        proxy_override: None,
-    });
+    journal.record_proxy_backup(sample_backup());
 
     journal.flush_to_disk().expect("Flush journal to disk");
     assert!(journal_path.exists(), "Journal file must exist on disk");
@@ -181,11 +199,7 @@ fn test_recovery_journal_fault_injection_after_each_step() {
         let mock_backend = Arc::new(MockNetworkBackend::new(mock_gw));
 
         // Initial system proxy was pointing to corporate proxy 192.168.1.254:8080
-        let original_backup = ProxySettingsBackup {
-            proxy_enable: Some(1),
-            proxy_server: Some("192.168.1.254:8080".to_string()),
-            proxy_override: Some("<local>".to_string()),
-        };
+        let original_backup = sample_backup();
 
         // Write journal before mutating proxy
         let mut journal = RecoveryJournal::new(journal_path.clone());

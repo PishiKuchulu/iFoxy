@@ -1,3 +1,8 @@
+#![cfg(windows)]
+// Uses the Windows tao platform extension and builds a real window, so
+// this smoke test is Windows-only (the Linux GUI is exercised by running
+// the app; the shared wry/tao types are covered by the main build).
+
 #[test]
 fn test_tao_and_wry_types() {
     use tao::dpi::LogicalSize;

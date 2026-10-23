@@ -51,6 +51,7 @@ fn test_safe_dll_search_and_single_instance() {
     assert!(mutex_1, "First instance must succeed");
 }
 
+#[cfg(windows)]
 #[test]
 fn test_tampered_wintun_dll_refused() {
     let temp_dir = std::env::temp_dir().join(format!("ifoxy_wintun_test_{}", std::process::id()));
@@ -87,6 +88,7 @@ fn test_tampered_wintun_dll_refused() {
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
+#[cfg(windows)]
 #[test]
 fn test_wintun_authenticode_signature_verified() {
     let temp_dir =
@@ -139,6 +141,11 @@ fn test_tampered_webview2_loader_dll_refused() {
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
+/// Windows install-location policy (Program Files roots, drive paths,
+/// case-insensitive matching). Linux deliberately diverges: installs
+/// under /usr or /opt are root-owned by construction and portable runs
+/// warn instead of prompting — see CHANGELOG 0.2.0.
+#[cfg(windows)]
 #[test]
 fn install_location_policy_allows_only_admin_writable_roots() {
     use ifoxy_windows::security::{

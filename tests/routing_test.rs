@@ -1,5 +1,5 @@
 use ifoxy_windows::vpn::network_backend::NetworkBackend;
-use ifoxy_windows::vpn::registry::ProxySettingsBackup;
+use ifoxy_windows::vpn::system_proxy::ProxySettingsBackup;
 use ifoxy_windows::vpn::routing::{
     is_private_or_loopback, split_tunnel_routes, RouteDefinition, RouteError, RouteManager,
 };
