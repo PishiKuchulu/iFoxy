@@ -1,9 +1,14 @@
+#[cfg(windows)]
 use std::env;
+#[cfg(windows)]
 use std::fs;
 use std::net::Ipv4Addr;
+#[cfg(windows)]
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::sync::Arc;
 use thiserror::Error;
+#[cfg(windows)]
 use wintun::{Adapter, Session};
 
 pub const DEFAULT_ADAPTER_NAME: &str = "iFoxy";
@@ -78,10 +83,13 @@ pub fn resolve_vpn_ip_avoiding_conflict(
     preferred_ip
 }
 
+#[cfg(windows)]
 pub const OFFICIAL_WINTUN_DLL_SHA256: &str =
     "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
+#[cfg(windows)]
 pub const EMBEDDED_WINTUN_DLL: &[u8] = include_bytes!("../../wintun.dll");
 
+#[cfg(windows)]
 pub fn ensure_wintun_dll_at(target_dir: &std::path::Path) -> Result<PathBuf, WintunError> {
     let dll_name = "wintun.dll";
     let target_path = target_dir.join(dll_name);
@@ -124,6 +132,7 @@ pub fn ensure_wintun_dll_at(target_dir: &std::path::Path) -> Result<PathBuf, Win
     Ok(target_path)
 }
 
+#[cfg(windows)]
 pub fn ensure_wintun_dll() -> Result<PathBuf, WintunError> {
     let exe_dir = env::current_exe()
         .ok()
@@ -133,6 +142,7 @@ pub fn ensure_wintun_dll() -> Result<PathBuf, WintunError> {
     ensure_wintun_dll_at(&exe_dir)
 }
 
+#[cfg(windows)]
 pub struct WintunDevice {
     pub adapter: Arc<Adapter>,
     pub session: Arc<Session>,
@@ -195,6 +205,7 @@ fn set_mtu_metric_netsh(_adapter_name: &str, _mtu: u32, _metric: u32) -> Result<
     Ok(())
 }
 
+#[cfg(windows)]
 impl WintunDevice {
     pub fn create_or_open(name: &str, preferred_ip: Ipv4Addr) -> Result<Self, WintunError> {
         let dll_path = ensure_wintun_dll()?;

@@ -1,10 +1,33 @@
+#[cfg(windows)]
 use crate::vpn::iphlpapi::{native_create_ip_forward_entry, native_delete_ip_forward_entry};
-use crate::vpn::registry::{ProxySettingsBackup, WinRegistry};
+#[cfg(windows)]
 use crate::vpn::routing::{RouteDefinition, RouteError};
-use crate::vpn::system_proxy::notify_system_settings_changed;
+#[cfg(not(windows))]
+use crate::vpn::routing::{RouteDefinition, RouteError};
+#[cfg(windows)]
+use crate::vpn::registry::ProxySettingsBackup;
+#[cfg(target_os = "linux")]
+use crate::vpn::system_proxy::ProxySettingsBackup;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 #[cfg(any(test, feature = "test-doubles"))]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+
+/// The production network backend for the current OS.
+pub fn platform_backend() -> Arc<dyn NetworkBackend> {
+    #[cfg(windows)]
+    {
+        Arc::new(WindowsNativeBackend::new())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(LinuxNativeBackend::new())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        compile_error!("iFoxy desktop supports Windows and Linux only");
+    }
+}
 
 pub trait NetworkBackend: Send + Sync {
     fn detect_default_gateway(&self) -> Result<Ipv4Addr, RouteError>;
@@ -19,8 +42,10 @@ pub trait NetworkBackend: Send + Sync {
 }
 
 /// Production network backend using native Windows IP Helper & Registry APIs (M4, H3).
+#[cfg(windows)]
 pub struct WindowsNativeBackend;
 
+#[cfg(windows)]
 impl WindowsNativeBackend {
     pub fn new() -> Self {
         Self
@@ -101,12 +126,14 @@ fn netsh_route(
     Ok(())
 }
 
+#[cfg(windows)]
 impl Default for WindowsNativeBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(windows)]
 impl NetworkBackend for WindowsNativeBackend {
     fn detect_default_gateway_and_interface(&self) -> Result<(Ipv4Addr, u32), RouteError> {
         // Native IP Helper API (0ms, zero shell subprocesses)
@@ -201,23 +228,147 @@ impl NetworkBackend for WindowsNativeBackend {
     }
 
     fn set_system_proxy(&self, port: u16) -> Result<(), String> {
-        // https= and socks= only: plain http:// is rejected by the local proxy
-        // (501), so it must not be advertised (S-9).
-        let proxy_server = format!("https=127.0.0.1:{port};socks=127.0.0.1:{port}");
-        WinRegistry::write_internet_dword("ProxyEnable", 1)?;
-        WinRegistry::write_internet_string("ProxyServer", &proxy_server)?;
-        notify_system_settings_changed();
-        Ok(())
+        crate::vpn::system_proxy::apply_system_proxy(port)
     }
 
     fn restore_system_proxy(&self, backup: Option<&ProxySettingsBackup>) -> Result<(), String> {
-        if let Some(b) = backup {
-            WinRegistry::restore_proxy_settings(b)?;
-        } else {
-            WinRegistry::write_internet_dword("ProxyEnable", 0)?;
+        crate::vpn::system_proxy::restore_system_proxy(backup)
+    }
+}
+
+/// Production network backend for Linux: the default gateway comes from
+/// /proc/net/route, route changes go through iproute2 (`ip route`), and
+/// the system proxy delegates to the per-OS store in `system_proxy`
+/// (GNOME `gsettings`).
+#[cfg(target_os = "linux")]
+pub struct LinuxNativeBackend;
+
+/// Interface name for an ifindex, from /sys/class/net (Linux only).
+#[cfg(target_os = "linux")]
+pub(crate) fn if_name_of_index(if_index: u32) -> Option<String> {
+    let rd = std::fs::read_dir("/sys/class/net").ok()?;
+    for entry in rd.flatten() {
+        if let Ok(text) = std::fs::read_to_string(entry.path().join("ifindex")) {
+            if text.trim().parse::<u32>().ok() == Some(if_index) {
+                return Some(entry.file_name().to_string_lossy().into_owned());
+            }
         }
-        notify_system_settings_changed();
-        Ok(())
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxNativeBackend {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn if_name_of(if_index: u32) -> Option<String> {
+        if_name_of_index(if_index)
+    }
+
+    fn ip_route(
+        &self,
+        action: &str,
+        route: &RouteDefinition,
+        if_index: u32,
+        with_gateway: bool,
+    ) -> Result<(), RouteError> {
+        let dev = Self::if_name_of(if_index).ok_or_else(|| {
+            RouteError::CommandFailed(format!("no interface with index {}", if_index))
+        })?;
+        let dest = format!("{}/{}", route.destination, route.prefix_len);
+        let mut args: Vec<String> = vec!["route".into(), action.into(), dest];
+        if with_gateway {
+            args.push("via".into());
+            args.push(route.gateway.to_string());
+        }
+        args.push("dev".into());
+        args.push(dev);
+        args.push("metric".into());
+        args.push(route.metric.to_string());
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let out = std::process::Command::new("ip")
+            .args(&arg_refs)
+            .output()
+            .map_err(|e| RouteError::CommandFailed(format!("failed to run ip: {}", e)))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(RouteError::CommandFailed(format!(
+            "ip {} failed: {}",
+            arg_refs.join(" "),
+            stderr
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LinuxNativeBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl NetworkBackend for LinuxNativeBackend {
+    fn detect_default_gateway_and_interface(&self) -> Result<(Ipv4Addr, u32), RouteError> {
+        let table = std::fs::read_to_string("/proc/net/route").map_err(|e| {
+            RouteError::CommandFailed(format!("cannot read /proc/net/route: {}", e))
+        })?;
+        let mut best: Option<(Ipv4Addr, String, u32)> = None;
+        for line in table.lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 8 || cols[1] != "00000000" {
+                continue;
+            }
+            let gw_le = u32::from_str_radix(cols[2], 16).unwrap_or(0);
+            if gw_le == 0 {
+                continue;
+            }
+            let metric = cols[6].parse::<u32>().unwrap_or(u32::MAX);
+            if best.as_ref().map(|(_, _, m)| metric < *m).unwrap_or(true) {
+                best = Some((Ipv4Addr::from(gw_le.swap_bytes()), cols[0].to_string(), metric));
+            }
+        }
+        let (gw, iface, _) = best.ok_or_else(|| {
+            RouteError::CommandFailed("no default route found in /proc/net/route".into())
+        })?;
+        let if_index = std::fs::read_to_string(format!("/sys/class/net/{}/ifindex", iface))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        Ok((gw, if_index))
+    }
+
+    fn detect_default_gateway(&self) -> Result<Ipv4Addr, RouteError> {
+        self.detect_default_gateway_and_interface().map(|(gw, _)| gw)
+    }
+
+    fn add_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError> {
+        // Prefer the gateway form. The TUN split routes name the tunnel's
+        // own address as the gateway, which some kernels reject as a
+        // nexthop; fall back to the device-only form every TUN client uses.
+        match self.ip_route("add", route, if_index, true) {
+            Ok(()) => Ok(()),
+            Err(first) => self.ip_route("add", route, if_index, false).map_err(|_| first),
+        }
+    }
+
+    fn delete_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError> {
+        match self.ip_route("del", route, if_index, true) {
+            Ok(()) => Ok(()),
+            Err(_) => self.ip_route("del", route, if_index, false),
+        }
+    }
+
+    fn set_system_proxy(&self, port: u16) -> Result<(), String> {
+        crate::vpn::system_proxy::apply_system_proxy(port)
+    }
+
+    fn restore_system_proxy(&self, backup: Option<&ProxySettingsBackup>) -> Result<(), String> {
+        crate::vpn::system_proxy::restore_system_proxy(backup)
     }
 }
 

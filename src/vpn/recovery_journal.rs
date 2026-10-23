@@ -1,5 +1,5 @@
 use crate::vpn::network_backend::NetworkBackend;
-use crate::vpn::registry::ProxySettingsBackup;
+use crate::vpn::system_proxy::ProxySettingsBackup;
 use crate::vpn::routing::RouteDefinition;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -45,10 +45,7 @@ pub struct RecoveryJournal {
 
 impl RecoveryJournal {
     pub fn default_path() -> PathBuf {
-        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(appdata)
-            .join("iFoxy")
-            .join("recovery_journal.json")
+        crate::paths::config_dir().join("recovery_journal.json")
     }
 
     pub fn new(path: PathBuf) -> Self {
@@ -157,14 +154,16 @@ impl RecoveryJournal {
             let _ = backend.restore_system_proxy(Some(backup));
         }
 
-        // 4. Revert any persistent WFP kill-switch filters (R-8, R-9)
+        // 4. Revert any persistent kill-switch state (R-8, R-9): WFP
+        // filters on Windows (normally reaped with the dynamic session,
+        // but a journal entry means a previous run asked for removal),
+        // the iptables chains on Linux (which genuinely persist).
         if !state.wfp_filters.is_empty() {
             tracing::info!(
-                "Replaying WFP killswitch filter cleanup for {} filters",
+                "Replaying killswitch cleanup for {} recorded rules",
                 state.wfp_filters.len()
             );
-            let fw = crate::vpn::killswitch::WindowsFirewallBackend::new();
-            use crate::vpn::killswitch::FirewallBackend;
+            let fw = crate::vpn::killswitch::platform_firewall_backend();
             let _ = fw.remove_kill_switch(&state.wfp_filters);
         }
 

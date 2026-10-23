@@ -1,4 +1,4 @@
-use crate::vpn::network_backend::{NetworkBackend, WindowsNativeBackend};
+use crate::vpn::network_backend::{platform_backend, NetworkBackend};
 use crate::vpn::recovery_journal::RecoveryJournal;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -76,10 +76,10 @@ pub fn detect_default_gateway() -> Result<Ipv4Addr, RouteError> {
 }
 
 pub fn detect_default_gateway_and_interface() -> Result<(Ipv4Addr, u32), RouteError> {
-    let backend = WindowsNativeBackend::new();
-    backend.detect_default_gateway_and_interface()
+    platform_backend().detect_default_gateway_and_interface()
 }
 
+#[cfg(windows)]
 pub fn is_admin() -> bool {
     #[link(name = "shell32")]
     extern "system" {
@@ -89,6 +89,13 @@ pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
+#[cfg(target_os = "linux")]
+pub fn is_admin() -> bool {
+    let uid = unsafe { libc::geteuid() };
+    uid == 0
+}
+
+#[cfg(windows)]
 pub fn request_elevation() {
     use std::os::windows::ffi::OsStrExt;
 
@@ -126,6 +133,69 @@ pub fn request_elevation() {
             );
         }
     }
+}
+
+/// Linux elevation: relaunch through pkexec (PolicyKit GUI prompt). The
+/// `IFOXY_ELEVATION_TRIED` marker stops a relaunch loop when pkexec
+/// exists but the user declines the prompt.
+#[cfg(target_os = "linux")]
+pub fn request_elevation() {
+    if std::env::var("IFOXY_ELEVATION_TRIED").is_ok() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        match std::process::Command::new("pkexec")
+            .arg("env")
+            .arg("IFOXY_ELEVATION_TRIED=1")
+            .arg(&exe)
+            .args(&args)
+            .spawn()
+        {
+            Ok(_) => return,
+            Err(e) => {
+                eprintln!(
+                    "iFoxy needs administrator rights for the TUN device and routes.\n\
+                     Automatic elevation failed ({}). Install policykit (pkexec) or run:\n  sudo {}",
+                    e,
+                    exe.display()
+                );
+            }
+        }
+    }
+}
+
+/// Best route (gateway, ifindex) toward `target` on this OS, for the
+/// network watcher. Windows uses the IP Helper API; Linux's default-route
+/// lookup covers public targets such as the VPN edge.
+pub fn platform_best_route(target: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
+    #[cfg(windows)]
+    {
+        crate::vpn::iphlpapi::native_get_best_route(target).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        detect_default_gateway_and_interface().ok()
+    }
+}
+
+/// Subscribe to OS route-change notifications where the platform offers
+/// them (Windows NotifyRouteChange2). Linux returns None and the watcher
+/// falls back to its polling interval. The returned value is an opaque
+/// keep-alive handle for the subscription.
+#[cfg(windows)]
+pub fn platform_subscribe_route_changes(
+    sender: tokio::sync::mpsc::Sender<()>,
+) -> Option<crate::vpn::iphlpapi::RouteChangeSubscription> {
+    crate::vpn::iphlpapi::subscribe_route_changes(sender).ok()
+}
+
+#[cfg(not(windows))]
+pub fn platform_subscribe_route_changes(
+    _sender: tokio::sync::mpsc::Sender<()>,
+) -> Option<std::convert::Infallible> {
+    None
 }
 
 pub struct RouteGuard {
@@ -226,7 +296,7 @@ impl RouteManager {
         wintun_ip: Ipv4Addr,
         wintun_if_idx: u32,
     ) -> Result<RouteGuard, RouteError> {
-        let backend = Arc::new(WindowsNativeBackend::new());
+        let backend = platform_backend();
         Self::install_vpn_routes_with_backend(
             edge_ip,
             physical_gateway,

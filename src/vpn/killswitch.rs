@@ -643,3 +643,184 @@ impl Drop for KillSwitchGuard {
         self.clean();
     }
 }
+
+/// The production firewall backend for the current OS.
+pub fn platform_firewall_backend() -> Arc<dyn FirewallBackend> {
+    #[cfg(windows)]
+    {
+        Arc::new(WindowsFirewallBackend::new())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(LinuxFirewallBackend::new())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        compile_error!("iFoxy desktop supports Windows and Linux only");
+    }
+}
+
+/// Linux kill switch: a dedicated iptables/ip6tables chain jumped to
+/// from OUTPUT, mirroring the WFP filter semantics — permits (loopback,
+/// DHCP, the edge itself, tunnel-sourced traffic, traffic entering the
+/// tunnel interface) are evaluated before a final DROP. Rule "ids" are
+/// positional: removal always tears down the whole chain, which is the
+/// only granularity the guard needs. If the process dies, the chain
+/// persists (unlike the dynamic WFP session); the recovery journal
+/// replay at next startup and the chain-name reuse below keep that from
+/// blocking traffic: a fresh install flushes any stale chain first.
+#[cfg(target_os = "linux")]
+pub struct LinuxFirewallBackend;
+
+#[cfg(target_os = "linux")]
+const KS_CHAIN_V4: &str = "IFOXY_KS";
+#[cfg(target_os = "linux")]
+const KS_CHAIN_V6: &str = "IFOXY_KS6";
+
+#[cfg(target_os = "linux")]
+impl LinuxFirewallBackend {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn run(bin: &str, args: &[&str]) -> Result<(), String> {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .output()
+            .map_err(|e| format!("failed to run {} (is iptables installed?): {}", bin, e))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} {} failed: {}",
+                bin,
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+
+    fn run_ok(bin: &str, args: &[&str]) -> bool {
+        Self::run(bin, args).is_ok()
+    }
+
+    /// Create (or flush) a chain and make sure OUTPUT jumps to it.
+    fn prepare_chain(bin: &str, chain: &str) -> Result<(), String> {
+        if Self::run(bin, &["-N", chain]).is_err() {
+            // Chain already exists (leftover from a crashed run): flush it.
+            Self::run(bin, &["-F", chain])?;
+        }
+        if !Self::run_ok(bin, &["-C", "OUTPUT", "-j", chain]) {
+            Self::run(bin, &["-I", "OUTPUT", "1", "-j", chain])?;
+        }
+        Ok(())
+    }
+
+    fn teardown_chain(bin: &str, chain: &str) {
+        while Self::run_ok(bin, &["-C", "OUTPUT", "-j", chain]) {
+            if Self::run(bin, &["-D", "OUTPUT", "-j", chain]).is_err() {
+                break;
+            }
+        }
+        let _ = Self::run(bin, &["-F", chain]);
+        let _ = Self::run(bin, &["-X", chain]);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LinuxFirewallBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl FirewallBackend for LinuxFirewallBackend {
+    fn install_kill_switch(&self, policy: &KillSwitchPolicy) -> Result<Vec<u64>, String> {
+        let mut ids: Vec<u64> = Vec::new();
+        let mut next_id = 1u64;
+
+        if policy.kill_switch_enabled {
+            let bin = "iptables";
+            Self::prepare_chain(bin, KS_CHAIN_V4).map_err(|e| {
+                Self::teardown_chain(bin, KS_CHAIN_V4);
+                e
+            })?;
+            let mut add = |args: &[&str]| -> Result<(), String> {
+                Self::run(bin, args)?;
+                ids.push(next_id);
+                next_id += 1;
+                Ok(())
+            };
+            let result = (|| {
+                add(&["-A", KS_CHAIN_V4, "-o", "lo", "-j", "RETURN"])?;
+                add(&[
+                    "-A", KS_CHAIN_V4, "-p", "udp", "--dport", "67", "-j", "RETURN",
+                ])?;
+                if let Some(edge_ip) = policy.edge_ip {
+                    add(&[
+                        "-A",
+                        KS_CHAIN_V4,
+                        "-d",
+                        &format!("{}/32", edge_ip),
+                        "-j",
+                        "RETURN",
+                    ])?;
+                }
+                if let Some(local_ip) = policy.wintun_local_ip {
+                    add(&[
+                        "-A",
+                        KS_CHAIN_V4,
+                        "-s",
+                        &format!("{}/32", local_ip),
+                        "-j",
+                        "RETURN",
+                    ])?;
+                }
+                if let Some(if_index) = policy.wintun_if_index {
+                    if let Some(name) =
+                        crate::vpn::network_backend::if_name_of_index(if_index)
+                    {
+                        add(&["-A", KS_CHAIN_V4, "-o", &name, "-j", "RETURN"])?;
+                    }
+                }
+                add(&["-A", KS_CHAIN_V4, "-j", "DROP"])?;
+                Ok::<(), String>(())
+            })();
+            if let Err(e) = result {
+                Self::teardown_chain(bin, KS_CHAIN_V4);
+                return Err(e);
+            }
+        }
+
+        if policy.block_ipv6_leaks {
+            let bin = "ip6tables";
+            Self::prepare_chain(bin, KS_CHAIN_V6)?;
+            let mut add = |args: &[&str]| -> Result<(), String> {
+                Self::run(bin, args)?;
+                ids.push(next_id);
+                next_id += 1;
+                Ok(())
+            };
+            let result = (|| {
+                add(&["-A", KS_CHAIN_V6, "-o", "lo", "-j", "RETURN"])?;
+                add(&["-A", KS_CHAIN_V6, "-j", "DROP"])?;
+                Ok::<(), String>(())
+            })();
+            if let Err(e) = result {
+                Self::teardown_chain(bin, KS_CHAIN_V6);
+                return Err(e);
+            }
+        }
+
+        tracing::info!("Linux kill switch installed ({} rules)", ids.len());
+        Ok(ids)
+    }
+
+    fn remove_kill_switch(&self, _filter_ids: &[u64]) -> Result<(), String> {
+        Self::teardown_chain("iptables", KS_CHAIN_V4);
+        Self::teardown_chain("ip6tables", KS_CHAIN_V6);
+        tracing::info!("Linux kill switch removed");
+        Ok(())
+    }
+}

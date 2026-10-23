@@ -8,6 +8,74 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+/// Bind a TCP listener with SO_REUSEADDR set (Unix).
+///
+/// The local proxy restarts on the same port across connect/disconnect
+/// cycles. On Linux, a just-closed accepted connection can sit in
+/// TIME_WAIT with the listener's local address and block an immediate
+/// rebind; Windows listeners get reuse semantics that mask this. Setting
+/// the option on the listening socket before bind is what allows the
+/// rebind, for this listener and for later binds over its TIME_WAIT
+/// sockets. Non-Unix platforms keep tokio's plain bind.
+pub async fn bind_listener(addr: &str) -> std::io::Result<TcpListener> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        let parsed: std::net::SocketAddrV4 = match addr.parse() {
+            Ok(v) => v,
+            Err(_) => return TcpListener::bind(addr).await,
+        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let cleanup = |fd: libc::c_int| -> std::io::Error {
+            let e = std::io::Error::last_os_error();
+            unsafe { libc::close(fd) };
+            e
+        };
+        let one: libc::c_int = 1;
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &one as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err(cleanup(fd));
+        }
+        let mut sin: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        sin.sin_family = libc::AF_INET as libc::sa_family_t;
+        sin.sin_port = parsed.port().to_be();
+        sin.sin_addr = libc::in_addr {
+            s_addr: u32::from(*parsed.ip()).to_be(),
+        };
+        let rc = unsafe {
+            libc::bind(
+                fd,
+                &sin as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err(cleanup(fd));
+        }
+        if unsafe { libc::listen(fd, 128) } != 0 {
+            return Err(cleanup(fd));
+        }
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+        std_listener.set_nonblocking(true)?;
+        TcpListener::from_std(std_listener)
+    }
+    #[cfg(not(unix))]
+    {
+        TcpListener::bind(addr).await
+    }
+}
+
 pub const DEFAULT_LOCAL_PROXY_PORT: u16 = 10800;
 pub const MAX_CONCURRENT_PROXY_CONNECTIONS: usize = 512;
 pub const PROXY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -92,6 +160,7 @@ pub struct LocalProxyServer {
     active_connections: Arc<AtomicUsize>,
     cancel_token: CancellationToken,
     task_handles: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+    accept_handle: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl LocalProxyServer {
@@ -101,6 +170,7 @@ impl LocalProxyServer {
             active_connections: Arc::new(AtomicUsize::new(0)),
             cancel_token: CancellationToken::new(),
             task_handles: Arc::new(std::sync::Mutex::new(Vec::new())),
+            accept_handle: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -112,15 +182,15 @@ impl Default for LocalProxyServer {
 }
 
 impl LocalProxyServer {
-    pub fn start(&self, port: u16, upstream: Arc<H2UpstreamSession>) -> JoinHandle<()> {
+    pub fn start(&self, port: u16, upstream: Arc<H2UpstreamSession>) {
         let running = self.running.clone();
         let active_conns = self.active_connections.clone();
         let cancel_token = self.cancel_token.clone();
         let task_handles = self.task_handles.clone();
         running.store(true, Ordering::SeqCst);
 
-        tokio::spawn(async move {
-            let listener = match TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+        let handle = tokio::spawn(async move {
+            let listener = match bind_listener(&format!("127.0.0.1:{}", port)).await {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::error!("Failed to bind local proxy on port {}: {:?}", port, e);
@@ -173,7 +243,11 @@ impl LocalProxyServer {
                     lock.push(handle);
                 }
             }
-        })
+        });
+
+        if let Ok(mut lock) = self.accept_handle.lock() {
+            *lock = Some(handle);
+        }
     }
 
     pub async fn stop(&self) {
@@ -189,6 +263,24 @@ impl LocalProxyServer {
         }
         for handle in handles {
             let _ = tokio::time::timeout(Duration::from_millis(500), handle).await;
+        }
+        // Join the accept task as well: stop() must guarantee the
+        // listening socket is closed when it returns — previously that
+        // was left to whichever tracker the caller had put the start
+        // handle in, and an immediate rebind of the port could race the
+        // accept task's final drop (observed on Linux under load).
+        // The join is deliberately NOT timeout-capped: the accept loop
+        // has no blocking sections and exits at its next poll once
+        // cancelled, while a capped join can return early on a loaded
+        // machine and leak exactly the race this join exists to close.
+        let accept = if let Ok(mut lock) = self.accept_handle.lock() {
+            lock.take()
+        } else {
+            None
+        };
+        if let Some(handle) = accept {
+            handle.abort();
+            let _ = handle.await;
         }
     }
 }
@@ -216,7 +308,19 @@ pub async fn handle_socks5(
     client: &mut tokio::net::TcpStream,
     upstream: Arc<H2UpstreamSession>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let h2_stream_opt = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, async {
+    // The handshake timeout covers only the client-side greeting and
+    // request bytes. It previously also wrapped the upstream CONNECT,
+    // which conflated a slow edge with a stalled client — and made the
+    // relay test fail deterministically under tokio's paused test clock,
+    // whose auto-advance fires the timer while the upstream handshake is
+    // still in flight. The upstream open has its own timeouts.
+    enum SocksTarget {
+        Connect(String, u16),
+        /// A terminal reply was already sent (unsupported cmd/atyp).
+        Done,
+    }
+
+    let parsed = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, async {
         // 1. Handshake
         let mut header = [0u8; 2];
         client.read_exact(&mut header).await?;
@@ -252,7 +356,7 @@ pub async fn handle_socks5(
             client
                 .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await?;
-            return Ok(None);
+            return Ok(SocksTarget::Done);
         }
 
         let target_host = match atyp {
@@ -281,7 +385,7 @@ pub async fn handle_socks5(
                 client
                     .write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await?;
-                return Ok(None);
+                return Ok(SocksTarget::Done);
             }
         };
 
@@ -289,31 +393,41 @@ pub async fn handle_socks5(
         client.read_exact(&mut port_bytes).await?;
         let target_port = u16::from_be_bytes(port_bytes);
 
-        // 3. Connect via H2UpstreamSession
-        match upstream.open_stream(&target_host, target_port).await {
-            Ok(h2_stream) => {
-                // SOCKS5 success reply (0x00)
-                client
-                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                    .await?;
-                Ok(Some(h2_stream))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Upstream CONNECT failed for {}:{}: {:?}",
-                    target_host,
-                    target_port,
-                    e
-                );
-                // Connection refused / Host unreachable (0x05)
-                let _ = client
-                    .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                    .await;
-                Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            }
-        }
+        Ok::<SocksTarget, Box<dyn std::error::Error + Send + Sync>>(SocksTarget::Connect(
+            target_host,
+            target_port,
+        ))
     })
     .await??;
+
+    // 3. Connect via H2UpstreamSession (outside the handshake timeout)
+    let h2_stream_opt = match parsed {
+        SocksTarget::Done => None,
+        SocksTarget::Connect(target_host, target_port) => {
+            match upstream.open_stream(&target_host, target_port).await {
+                Ok(h2_stream) => {
+                    // SOCKS5 success reply (0x00)
+                    client
+                        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await?;
+                    Some(h2_stream)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Upstream CONNECT failed for {}:{}: {:?}",
+                        target_host,
+                        target_port,
+                        e
+                    );
+                    // Connection refused / Host unreachable (0x05)
+                    let _ = client
+                        .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await;
+                    return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+        }
+    };
 
     if let Some(mut h2_stream) = h2_stream_opt {
         copy_bidirectional_with_idle(client, &mut h2_stream, PROXY_IDLE_TIMEOUT).await?;
