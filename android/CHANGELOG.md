@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.14 (versionCode 51) — splash crash fix
+
+- **Fixed a launch crash in 1.0.13**: the splash loaded the app icon via
+  `painterResource(R.mipmap.ic_launcher)`, which on API 26+ resolves to
+  the adaptive-icon XML — Compose only accepts vector drawables and
+  raster images there, so the app crashed on open
+  ("Only VectorDrawables and rasterized asset types are supported").
+  The splash now uses a raster copy of the flattened launcher icon
+  bundled as `drawable-nodpi/app_icon.png`.
+
 ## 1.0.13 (versionCode 50) — new splash
 
 - Splash screen redesigned per Farzad's spec: the orange power medallion

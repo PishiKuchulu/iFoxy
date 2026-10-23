@@ -54,7 +54,10 @@ fun SplashScreen(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Image(
-                painter = painterResource(R.mipmap.ic_launcher),
+                // Raster copy of the launcher icon: R.mipmap.ic_launcher
+                // resolves to the adaptive-icon XML on API 26+, which
+                // painterResource cannot load (crashes the splash).
+                painter = painterResource(R.drawable.app_icon),
                 contentDescription = null,
                 modifier = Modifier
                     .size(96.dp)
