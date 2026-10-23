@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.13 (versionCode 50) — new splash
+
+- Splash screen redesigned per Farzad's spec: the orange power medallion
+  is replaced by the app icon itself, the "iFoxy" wordmark and the
+  spinner are gone.
+- The loading indicator is now a native Compose port of his ripple-dots
+  SVG: a dot grid inside a disc, lit by two expanding rings on a 2.8 s
+  cycle (second ring half a cycle behind), drawn on a Canvas with the
+  dark-surface ink (#F5F5F7) matching the splash background. The
+  light-surface variant (#131316 ink) is a one-line parameter change in
+  `RippleDotsLoader` if a light splash is ever wanted.
+
 ## 1.0.12 (versionCode 49) — multiple accounts with automatic quota rotation
 
 - **Multiple Firefox accounts**: sign in with several accounts
