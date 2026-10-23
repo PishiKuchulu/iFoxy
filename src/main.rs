@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use ifoxy_windows::control_api::{run_hardened_ui_server, ControlApiConfig};
 use ifoxy_windows::security::enforce_safe_dll_search;
@@ -134,10 +134,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 4. Crash recovery: replay recovery journal if dirty before any network changes (R-9)
-    let native_backend = ifoxy_windows::vpn::network_backend::WindowsNativeBackend::new();
+    let native_backend = ifoxy_windows::vpn::network_backend::platform_backend();
     if let Err(e) = ifoxy_windows::vpn::recovery_journal::RecoveryJournal::recover_if_dirty(
         &ifoxy_windows::vpn::recovery_journal::RecoveryJournal::default_path(),
-        &native_backend,
+        &*native_backend,
     ) {
         tracing::error!("Recovery journal replay error on startup: {:?}", e);
     }
@@ -179,11 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = win_builder.build(&event_loop)?;
 
     // 7. Attach native Microsoft Edge WebView2 rendering inside the window
-    let webview_data_dir = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("iFoxy")
-        .join("webview_data");
+    let webview_data_dir = ifoxy_windows::paths::data_dir().join("webview_data");
     let _ = std::fs::create_dir_all(&webview_data_dir);
 
     let mut web_context = wry::WebContext::new(Some(webview_data_dir));

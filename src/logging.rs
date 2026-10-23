@@ -127,13 +127,7 @@ impl io::Write for SharedRollingLogger {
 }
 
 pub fn default_log_path() -> PathBuf {
-    let local_appdata = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    local_appdata
-        .join("iFoxy")
-        .join("logs")
-        .join("ifoxy.log")
+    crate::paths::state_dir().join("logs").join("ifoxy.log")
 }
 
 pub fn init_rolling_logger() -> Option<tracing::subscriber::DefaultGuard> {

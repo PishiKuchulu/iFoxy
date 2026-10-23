@@ -59,12 +59,36 @@ pub fn is_secure_install_location(exe_dir: &Path, roots: &[PathBuf]) -> bool {
 /// administrators can write to, unless the operator explicitly opts in
 /// (development or portable use).
 pub fn check_install_location(exe_dir: &Path, allow_portable: bool) -> Result<(), SecurityError> {
-    if allow_portable || is_secure_install_location(exe_dir, &trusted_install_roots()) {
-        Ok(())
-    } else {
-        Err(SecurityError::InsecureLocation(
-            exe_dir.display().to_string(),
-        ))
+    #[cfg(target_os = "linux")]
+    {
+        let _ = allow_portable;
+        // Linux divergence (documented): there is no native Yes/No prompt
+        // yet (the Windows one is a message box), and the distributed
+        // tarball normally runs from the user's home — exiting here would
+        // brick the normal install path. Installs under /usr or /opt are
+        // root-owned by construction; anywhere else, warn loudly and run.
+        let admin_owned = [Path::new("/usr"), Path::new("/opt")]
+            .iter()
+            .any(|r| exe_dir.starts_with(r));
+        if !admin_owned {
+            tracing::warn!(
+                "iFoxy runs elevated from a user-writable location on Linux: {}. \
+                 A local process running as your user could replace the binary and \
+                 gain root at the next launch; prefer installing under /opt or /usr/local.",
+                exe_dir.display()
+            );
+        }
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if allow_portable || is_secure_install_location(exe_dir, &trusted_install_roots()) {
+            Ok(())
+        } else {
+            Err(SecurityError::InsecureLocation(
+                exe_dir.display().to_string(),
+            ))
+        }
     }
 }
 
@@ -264,6 +288,8 @@ pub fn enforce_safe_dll_search() {
 pub struct SingleInstanceGuard {
     #[cfg(windows)]
     handle: *mut std::ffi::c_void,
+    #[cfg(target_os = "linux")]
+    _lock_file: Option<fs::File>,
 }
 
 impl Drop for SingleInstanceGuard {
@@ -308,7 +334,29 @@ pub fn acquire_single_instance(mutex_name: &str) -> Option<SingleInstanceGuard> 
     }
 }
 
-#[cfg(not(windows))]
+/// Linux single instance: an flock held for the process lifetime on a
+/// lockfile in the runtime dir. Dropping the guard closes the file and
+/// releases the lock.
+#[cfg(target_os = "linux")]
+pub fn acquire_single_instance(_mutex_name: &str) -> Option<SingleInstanceGuard> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let path = PathBuf::from(dir).join("ifoxy.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(path)
+        .ok()?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return None;
+    }
+    Some(SingleInstanceGuard {
+        _lock_file: Some(file),
+    })
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn acquire_single_instance(_mutex_name: &str) -> Option<SingleInstanceGuard> {
     Some(SingleInstanceGuard {})
 }
