@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.15 (versionCode 52) — Linux desktop release companion
+
+- No Android changes in this release. The version bump accompanies the
+  desktop client's Linux port (with full TUN mode), which ships in the
+  same combined GitHub release.
+
 ## 1.0.14 (versionCode 51) — splash crash fix
 
 - **Fixed a launch crash in 1.0.13**: the splash loaded the app icon via
