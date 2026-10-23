@@ -52,7 +52,7 @@ impl AppState {
         let loaded = load_stored_session();
         let initial_logs = vec![
             "🦊 iFoxy Windows Core Initialized".to_string(),
-            "Ready for full-system Wintun L3 and HTTP/2 CONNECT tunneling".to_string(),
+            "Ready for full-system TUN L3 and HTTP/2 CONNECT tunneling".to_string(),
         ];
 
         let fxa_client = Arc::new(FxaClient::new());
@@ -414,7 +414,7 @@ pub const IFOXY_BANNER_PNG: &[u8] = include_bytes!("../ui/assets/ifoxy_banner.pn
 pub const IFOXY_WORDMARK_PNG: &[u8] = include_bytes!("../ui/assets/ifoxy_wordmark.png");
 
 pub async fn bind_ui_server(preferred_port: u16) -> Result<(TcpListener, u16), std::io::Error> {
-    if let Ok(listener) = TcpListener::bind(format!("127.0.0.1:{}", preferred_port)).await {
+    if let Ok(listener) = crate::vpn::local_proxy::bind_listener(&format!("127.0.0.1:{}", preferred_port)).await {
         let port = listener.local_addr()?.port();
         return Ok((listener, port));
     }
