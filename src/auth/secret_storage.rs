@@ -161,7 +161,7 @@ mod dpapi {
     }
 }
 
-#[cfg(all(not(windows), test))]
+#[cfg(all(not(windows), not(target_os = "linux"), test))]
 mod dpapi {
     use super::*;
 
@@ -188,8 +188,102 @@ mod dpapi {
     }
 }
 
-#[cfg(all(not(windows), not(test)))]
-compile_error!("iFoxy requires Windows DPAPI for production secret storage. Non-Windows builds are only allowed under test.");
+/// Linux secret protection: ChaCha20-Poly1305 (via ring) with a random
+/// per-user key stored next to the session file, both files mode 0600.
+/// This matches DPAPI's user-scope threat model — secrets are encrypted
+/// at rest and unreadable to other users; it does not protect against
+/// malware running as the same user, exactly like DPAPI.
+#[cfg(target_os = "linux")]
+mod dpapi {
+    use super::*;
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    const HEADER: &[u8] = b"ENC2:";
+    const NONCE_LEN: usize = 12;
+    const KEY_LEN: usize = 32;
+
+    fn key_path() -> PathBuf {
+        crate::paths::config_dir().join("session.key")
+    }
+
+    fn load_or_create_key() -> Result<[u8; KEY_LEN], SecretError> {
+        let path = key_path();
+        if let Ok(existing) = std::fs::read(&path) {
+            if existing.len() == KEY_LEN {
+                let mut key = [0u8; KEY_LEN];
+                key.copy_from_slice(&existing);
+                return Ok(key);
+            }
+        }
+        let rng = SystemRandom::new();
+        let mut key = [0u8; KEY_LEN];
+        rng.fill(&mut key)
+            .map_err(|_| SecretError::Dpapi("RNG failure".into()))?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, key)?;
+        set_owner_only(&path);
+        Ok(key)
+    }
+
+    fn load_key() -> Result<[u8; KEY_LEN], SecretError> {
+        let existing = std::fs::read(key_path())?;
+        if existing.len() != KEY_LEN {
+            return Err(SecretError::Dpapi("Corrupt key file".into()));
+        }
+        let mut key = [0u8; KEY_LEN];
+        key.copy_from_slice(&existing);
+        Ok(key)
+    }
+
+    fn set_owner_only(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    pub fn encrypt_bytes(plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
+        let key_bytes = load_or_create_key()?;
+        let unbound = UnboundKey::new(&CHACHA20_POLY1305, &key_bytes)
+            .map_err(|_| SecretError::Dpapi("Invalid key".into()))?;
+        let key = LessSafeKey::new(unbound);
+        let rng = SystemRandom::new();
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rng.fill(&mut nonce_bytes)
+            .map_err(|_| SecretError::Dpapi("RNG failure".into()))?;
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut in_out = plaintext.to_vec();
+        key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+            .map_err(|_| SecretError::Dpapi("Encryption failed".into()))?;
+        let mut out = Vec::with_capacity(HEADER.len() + NONCE_LEN + in_out.len());
+        out.extend_from_slice(HEADER);
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&in_out);
+        Ok(out)
+    }
+
+    pub fn decrypt_bytes(ciphertext: &[u8]) -> Result<Vec<u8>, SecretError> {
+        if !ciphertext.starts_with(HEADER) || ciphertext.len() < HEADER.len() + NONCE_LEN {
+            return Err(SecretError::Dpapi("Invalid ciphertext header".into()));
+        }
+        let key_bytes = load_key()?;
+        let unbound = UnboundKey::new(&CHACHA20_POLY1305, &key_bytes)
+            .map_err(|_| SecretError::Dpapi("Invalid key".into()))?;
+        let key = LessSafeKey::new(unbound);
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        nonce_bytes.copy_from_slice(&ciphertext[HEADER.len()..HEADER.len() + NONCE_LEN]);
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut in_out = ciphertext[HEADER.len() + NONCE_LEN..].to_vec();
+        let plain = key
+            .open_in_place(nonce, Aad::empty(), &mut in_out)
+            .map_err(|_| SecretError::Dpapi("Decryption failed".into()))?;
+        Ok(plain.to_vec())
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux"), not(test)))]
+compile_error!("iFoxy requires Windows DPAPI or the Linux AEAD store for production secret storage. Other platforms are only allowed under test.");
 
 pub struct SecretStore {
     storage_path: PathBuf,
@@ -197,10 +291,7 @@ pub struct SecretStore {
 
 impl SecretStore {
     pub fn new() -> Self {
-        let base = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let dir = base.join("iFoxy");
+        let dir = crate::paths::config_dir();
         let _ = std::fs::create_dir_all(&dir);
         Self {
             storage_path: dir.join("session.enc"),
@@ -219,6 +310,14 @@ impl SecretStore {
 
         // Write with restrictive file permissions
         std::fs::write(&self.storage_path, &encrypted)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &self.storage_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
         Ok(())
     }
 
