@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.12 (versionCode 49) — multiple accounts with automatic quota rotation
+
+- **Multiple Firefox accounts**: sign in with several accounts
+  (Settings → Account → Add account) and keep them all on the device.
+  Accounts live in an encrypted vault; the current session is untouched
+  plumbing — activation swaps which account's tokens are live. The
+  existing single-account session migrates into the vault automatically
+  (its email is read from the FxA profile endpoint).
+- **Automatic switch on quota exhaustion**: every Guardian proxy-pass
+  mint (initial connect, in-place renewal, watchdog redial) goes through
+  one rotation-aware path. When the active account's quota is exhausted
+  (Guardian HTTP 429, or a minted pass reporting zero bytes remaining),
+  the account is marked exhausted, the next account with quota left is
+  activated, and the connection continues on it — bounded by the number
+  of stored accounts. A notification announces the switch.
+- **Account management**: Settings → Account lists every account with its
+  live quota snapshot and Active marker; "Use" switches manually (the
+  tunnel re-dials immediately), the trash icon removes an account
+  (removing the active one falls through to the next account, or signs
+  out when none remain — the Sign out button follows the same rule).
+- Quota snapshots are kept per account (proxy-pass headers and Guardian
+  status both feed them); refreshed tokens are harvested back into the
+  vault on every switch. Rotation selection is unit-tested.
+
 ## 1.0.11 (versionCode 48) — in-app updates
 
 - **In-app updater** (same pattern as Anvex/PishiMovie): the app checks

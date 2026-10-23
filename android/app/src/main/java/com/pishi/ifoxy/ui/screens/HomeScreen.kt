@@ -204,6 +204,9 @@ fun HomeScreen(
                             quotaMax = it
                             app.settingsStore.cachedQuotaMax = it
                         }
+                        // Multi-account: keep the active account's vault
+                        // snapshot fresh for rotation decisions.
+                        app.accountStore.recordEntitlement(entitlement)
                     }
             }
         }

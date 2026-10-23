@@ -31,8 +31,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -69,7 +73,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.pishi.ifoxy.BuildConfig
+import com.pishi.ifoxy.data.AccountStore
 import com.pishi.ifoxy.data.SettingsStore
+import com.pishi.ifoxy.data.StoredAccount
+import com.pishi.ifoxy.data.formatBytes
 import com.pishi.ifoxy.ui.components.AppUpdateController
 import com.pishi.ifoxy.ui.components.UpdateUiState
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
@@ -83,10 +90,23 @@ import kotlinx.coroutines.withContext
 private const val GITHUB_URL = "https://github.com/PishiKuchulu/iFoxy"
 
 @Composable
+private fun accountQuotaText(account: StoredAccount): String = when {
+    account.isUnlimited -> "Unlimited data"
+    account.exhausted || account.quotaRemaining == 0L -> "Quota exhausted"
+    account.quotaRemaining != null && account.quotaMax != null ->
+        "${formatBytes(account.quotaRemaining)} of ${formatBytes(account.quotaMax)} left"
+    account.quotaRemaining != null -> "${formatBytes(account.quotaRemaining)} left"
+    else -> "Quota not checked yet"
+}
+
 fun SettingsScreen(
     settingsStore: SettingsStore,
     darkTheme: Boolean,
     updateController: AppUpdateController,
+    accountStore: AccountStore,
+    onSwitchAccount: (String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onAddAccount: () -> Unit,
     onOpenLogs: () -> Unit,
     onSignOut: () -> Unit,
     onBack: () -> Unit,
@@ -538,9 +558,67 @@ fun SettingsScreen(
             )
 
             }
+            var accountsTick by remember { mutableStateOf(0) }
+            val storedAccounts = remember(accountsTick) { accountStore.accounts() }
+            val activeAccountId = remember(accountsTick) { accountStore.activeAccountId }
+            var accountPendingRemoval by remember { mutableStateOf<StoredAccount?>(null) }
             SettingsSection(title = "Account", darkTheme = darkTheme) {
+            storedAccounts.forEach { account ->
+                val isActive = account.id == activeAccountId
+                ListItem(
+                    headlineContent = { Text(account.email) },
+                    supportingContent = {
+                        Text(
+                            if (isActive) {
+                                "${accountQuotaText(account)} \u2022 Active"
+                            } else {
+                                accountQuotaText(account)
+                            },
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            if (isActive) Icons.Filled.CheckCircle else Icons.Filled.AccountCircle,
+                            contentDescription = null,
+                            tint = if (isActive) {
+                                Color(0xFF22C55E)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (!isActive) {
+                                TextButton(
+                                    onClick = {
+                                        onSwitchAccount(account.id)
+                                        accountsTick++
+                                    },
+                                ) {
+                                    Text("Use")
+                                }
+                            }
+                            IconButton(onClick = { accountPendingRemoval = account }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Remove account")
+                            }
+                        }
+                    },
+                )
+            }
+            ListItem(
+                headlineContent = { Text("Add account") },
+                supportingContent = {
+                    Text("Sign in with another Firefox account — iFoxy switches automatically when one runs out of quota")
+                },
+                leadingContent = { Icon(Icons.Filled.PersonAdd, contentDescription = null) },
+                modifier = Modifier.clickable { onAddAccount() },
+            )
             Button(
-                onClick = onSignOut,
+                onClick = {
+                    onSignOut()
+                    accountsTick++
+                },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -553,6 +631,39 @@ fun SettingsScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("Sign out")
             }
+            }
+            if (accountPendingRemoval != null) {
+                val target = accountPendingRemoval!!
+                AlertDialog(
+                    onDismissRequest = { accountPendingRemoval = null },
+                    title = { Text("Remove account?") },
+                    text = {
+                        Text(
+                            if (target.id == activeAccountId) {
+                                "${target.email} is the active account. Removing it signs you out of it" +
+                                    if (storedAccounts.size > 1) " and switches to the next account." else "."
+                            } else {
+                                "Remove ${target.email} from this device?"
+                            },
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                onRemoveAccount(target.id)
+                                accountPendingRemoval = null
+                                accountsTick++
+                            },
+                        ) {
+                            Text("Remove")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { accountPendingRemoval = null }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
             }
             Spacer(Modifier.height(4.dp))
         }

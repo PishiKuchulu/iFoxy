@@ -51,6 +51,7 @@ private val jsonMediaType = "application/json".toMediaType()
 class FxaAuthRepository(
     private val tokenStore: TokenStore,
     private val challengeSolver: FastlyChallengeSolver = FastlyChallengeSolver(ControlPlaneHttp.cookieJar),
+    private val accountStore: AccountStore? = null,
 ) {
     var pendingSessionToken: String?
         get() = tokenStore.pendingSessionToken
@@ -70,6 +71,11 @@ class FxaAuthRepository(
 
     suspend fun startLogin(email: String, password: String): Result<Boolean> = runCatching {
         val cleanEmail = normalizeEmail(email)
+        // Multi-account: stash the outgoing account's freshest tokens in
+        // the vault before this sign-in replaces the live session, and
+        // remember whose login this is so completion can file it.
+        accountStore?.harvestFrom(tokenStore)
+        tokenStore.pendingLoginEmail = cleanEmail
         val data = loginAttempt(cleanEmail, password)
         val sessionToken = data.getString("sessionToken")
         pendingSessionToken = sessionToken
@@ -202,14 +208,37 @@ class FxaAuthRepository(
 
     private suspend fun completeLogin(sessionToken: String) {
         val tokenData = oauthToken(sessionToken)
-        tokenStore.saveAuth(
-            RuntimeAuth(
-                accessToken = tokenData.getString("access_token"),
-                refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
-                expiresAtEpochSeconds = expiryFrom(tokenData),
-            ),
+        val auth = RuntimeAuth(
+            accessToken = tokenData.getString("access_token"),
+            refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
+            expiresAtEpochSeconds = expiryFrom(tokenData),
         )
+        tokenStore.saveAuth(auth)
+        // File the account in the multi-account vault (it becomes active).
+        val loginEmail = tokenStore.pendingLoginEmail
+        if (accountStore != null && loginEmail != null) {
+            runCatching { accountStore.upsert(loginEmail, auth) }
+                .onFailure { AppLogger.w(TAG, "could not file the account in the vault", it) }
+        }
+        tokenStore.pendingLoginEmail = null
         clearPendingSession()
+    }
+
+    /** The signed-in account's email, from the FxA profile endpoint.
+     *  Used to migrate a pre-multi-account session into the vault. */
+    suspend fun fetchAccountEmail(): String? = withContext(Dispatchers.IO) {
+        val auth = ensureFreshAccessToken()
+        val request = Request.Builder()
+            .url("https://api.accounts.firefox.com/v1/account/profile")
+            .header("Authorization", "Bearer ${auth.accessToken}")
+            .applyMozillaVpnHeaders()
+            .build()
+        ControlPlaneHttp.client.newCall(request).execute().use { resp ->
+            if (resp.code != 200) return@withContext null
+            val text = resp.body?.string().orEmpty()
+            runCatching { JSONObject(text).optString("email") }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+        }
     }
 
     private suspend fun loginAttempt(email: String, password: String, withVerificationMethod: Boolean = true): JSONObject {

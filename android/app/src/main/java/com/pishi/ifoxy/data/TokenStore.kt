@@ -49,6 +49,18 @@ class TokenStore(context: Context) {
             }
         }
 
+    /** Email of the in-progress sign-in (multi-account vault bookkeeping);
+     *  set at login start, consumed when the login completes. */
+    var pendingLoginEmail: String?
+        get() = prefs.getString(KEY_PENDING_LOGIN_EMAIL, null)?.takeIf { it.isNotBlank() }
+        set(value) {
+            if (value != null) {
+                prefs.edit().putString(KEY_PENDING_LOGIN_EMAIL, value).apply()
+            } else {
+                prefs.edit().remove(KEY_PENDING_LOGIN_EMAIL).apply()
+            }
+        }
+
     fun clear() {
         prefs.edit().clear().apply()
     }
@@ -58,6 +70,7 @@ class TokenStore(context: Context) {
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT = "expires_at"
         private const val KEY_PENDING_SESSION_TOKEN = "pending_session_token"
+        private const val KEY_PENDING_LOGIN_EMAIL = "pending_login_email"
 
         private const val CLOCK_SKEW_TOLERANCE_SECONDS = 60L
     }
