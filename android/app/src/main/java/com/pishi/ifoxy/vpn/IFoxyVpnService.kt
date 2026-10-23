@@ -676,38 +676,6 @@ class IFoxyVpnService : VpnService() {
             }
             ensureGenerationCurrent(myGeneration)
 
-            /**
-             * Multi-account choke point: every proxy pass (initial dial,
-             * renewal, watchdog redial) is minted through here. When
-             * Guardian reports the active account's quota as exhausted
-             * (HTTP 429 on the token endpoint, or a minted pass with zero
-             * bytes remaining), the next signed-in account is activated
-             * and the mint retried with it — bounded by the number of
-             * stored accounts, so it always terminates.
-             */
-            suspend fun mintProxyPass(): ProxyPass {
-                val vault = AccountStore(applicationContext)
-                val switcher = AccountSwitcher(applicationContext, vault, tokenStore, settingsStore)
-                var rotationsLeft = vault.accounts().size
-                while (true) {
-                    try {
-                        val pass = mintProxyPassOnce()
-                        vault.recordPassQuota(pass.quotaRemaining, pass.quotaMax)
-                        val mintedEmpty = pass.quotaRemaining == 0L &&
-                            pass.quotaMax != null && pass.quotaMax > 0
-                        if (!mintedEmpty || rotationsLeft <= 0) return pass
-                        if (switcher.rotateOnQuotaExhausted() !is RotationResult.Rotated) return pass
-                        rotationsLeft--
-                        AppLogger.i(TAG, "the active account had no quota left; minting a pass on the next account")
-                    } catch (quota: QuotaExceededError) {
-                        if (rotationsLeft <= 0) throw quota
-                        if (switcher.rotateOnQuotaExhausted() !is RotationResult.Rotated) throw quota
-                        rotationsLeft--
-                        AppLogger.i(TAG, "quota exhausted; switched accounts and minting a new pass")
-                    }
-                }
-            }
-
             suspend fun mintProxyPassOnce(): ProxyPass {
                 var auth = tokenStore.loadAuth() ?: throw TokenInvalidError("Not signed in")
 
@@ -741,6 +709,38 @@ class IFoxyVpnService : VpnService() {
                     settingsStore.cachedQuotaMax = pass.quotaMax
                 }
                 return pass
+            }
+
+            /**
+             * Multi-account choke point: every proxy pass (initial dial,
+             * renewal, watchdog redial) is minted through here. When
+             * Guardian reports the active account's quota as exhausted
+             * (HTTP 429 on the token endpoint, or a minted pass with zero
+             * bytes remaining), the next signed-in account is activated
+             * and the mint retried with it — bounded by the number of
+             * stored accounts, so it always terminates.
+             */
+            suspend fun mintProxyPass(): ProxyPass {
+                val vault = AccountStore(applicationContext)
+                val switcher = AccountSwitcher(applicationContext, vault, tokenStore, settingsStore)
+                var rotationsLeft = vault.accounts().size
+                while (true) {
+                    try {
+                        val pass = mintProxyPassOnce()
+                        vault.recordPassQuota(pass.quotaRemaining, pass.quotaMax)
+                        val mintedEmpty = pass.quotaRemaining == 0L &&
+                            pass.quotaMax != null && pass.quotaMax > 0
+                        if (!mintedEmpty || rotationsLeft <= 0) return pass
+                        if (switcher.rotateOnQuotaExhausted() !is RotationResult.Rotated) return pass
+                        rotationsLeft--
+                        AppLogger.i(TAG, "the active account had no quota left; minting a pass on the next account")
+                    } catch (quota: QuotaExceededError) {
+                        if (rotationsLeft <= 0) throw quota
+                        if (switcher.rotateOnQuotaExhausted() !is RotationResult.Rotated) throw quota
+                        rotationsLeft--
+                        AppLogger.i(TAG, "quota exhausted; switched accounts and minting a new pass")
+                    }
+                }
             }
 
             var currentPassExpiry: Long? = null
