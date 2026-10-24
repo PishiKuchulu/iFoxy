@@ -54,12 +54,26 @@ class AppUpdateSelectionTest {
     }
 
     @Test
-    fun `falls back to any apk asset when the canonical name differs`() {
+    fun `non-canonical apk names are not accepted as updates`() {
+        // Changed with the A6 fix: the old any-.apk fallback would offer
+        // an arbitrary APK attached to a release as an update.
         val legacy = GhRelease(
             tagName = "v1.0.12",
             assets = listOf(GhAsset("app-release.apk", "https://example.test/app-release.apk", 5)),
         )
-        val update = AppUpdateChecker.selectUpdate(listOf(legacy), "1.0.10")
-        assertEquals("app-release.apk", update?.assetName)
+        assertNull(AppUpdateChecker.selectUpdate(listOf(legacy), "1.0.10"))
+    }
+
+    @Test
+    fun `asset digest is carried into the update info for verification`() {
+        val hex = "a".repeat(64)
+        val release = GhRelease(
+            tagName = "v1.0.12",
+            assets = listOf(
+                GhAsset("iFoxy-v1.0.12.apk", "https://example.test/iFoxy-v1.0.12.apk", 5, digest = "sha256:$hex"),
+            ),
+        )
+        val update = AppUpdateChecker.selectUpdate(listOf(release), "1.0.10")
+        assertEquals(hex, update?.sha256)
     }
 }
