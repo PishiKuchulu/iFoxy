@@ -1,3 +1,10 @@
+# Strip debug/verbose log calls (they carry connection targets) from
+# release builds even where they bypass AppLogger.
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+}
+
 -dontwarn io.netty.**
 -keep class io.netty.** { *; }
 
