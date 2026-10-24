@@ -1,6 +1,6 @@
 [package]
-name = "ifoxy-windows"
-version = "0.2.0"
+name = "ifoxy"
+version = "0.2.1"
 edition = "2021"
 
 [dependencies]
@@ -65,7 +65,7 @@ test-doubles = []
 winres = "0.1"
 
 [dev-dependencies]
-ifoxy-windows = { path = ".", features = ["test-doubles"] }
+ifoxy = { path = ".", features = ["test-doubles"] }
 tokio = { version = "1.43", features = ["full", "test-util"] }
 rcgen = "0.13"
 
