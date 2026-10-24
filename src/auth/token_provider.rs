@@ -131,9 +131,7 @@ impl FxaTokenProvider {
                 *lock = Some(new_tokens);
                 Ok(access_tok)
             }
-            Err(AuthError::Api { status, message })
-                if status == 400 || status == 401 || status == 403 =>
-            {
+            Err(AuthError::Api { status, message }) if is_permanent_refresh_rejection(status, &message) => {
                 // Permanent auth failure (C7, R-16): session revoked on server or invalid refresh token
                 *lock = None;
                 let _ = self.secret_store.clear();
@@ -143,7 +141,13 @@ impl FxaTokenProvider {
                 ))
             }
             Err(e) => {
-                // Transient network failure: if existing token is not completely expired, allow fallback
+                // Everything else is treated as transient — including
+                // HTTP 400/403 responses that are not an invalid_grant
+                // rejection. The old code cleared the stored credentials
+                // on ANY 400/401/403, so a CDN-generated 403 or an
+                // unrelated 400 permanently logged the user out
+                // (external review, S7). If the existing token is not
+                // completely expired, allow fallback.
                 if let Some(ref t) = *lock {
                     if t.expires_at_epoch_seconds > now {
                         return Ok(t.access_token.clone());
@@ -154,18 +158,35 @@ impl FxaTokenProvider {
         }
     }
 
-    pub async fn sign_out(&self) -> Result<(), String> {
+    /// Sign out locally (always succeeds) and report whether the
+    /// server-side token revocations actually succeeded, so the UI
+    /// does not claim a revocation that never landed (external
+    /// review, S7). Returns Ok(revoked_all).
+    pub async fn sign_out(&self) -> Result<bool, String> {
         let mut lock = self.tokens.write().await;
+        let mut revoked_all = true;
         if let Some(ref t) = *lock {
-            let _ = self.fxa_client.revoke_token(&t.access_token).await;
+            if self.fxa_client.revoke_token(&t.access_token).await.is_err() {
+                revoked_all = false;
+            }
             if let Some(ref rt) = t.refresh_token {
-                let _ = self.fxa_client.revoke_token(rt).await;
+                if self.fxa_client.revoke_token(rt).await.is_err() {
+                    revoked_all = false;
+                }
             }
         }
         *lock = None;
         let _ = self.secret_store.clear();
-        Ok(())
+        Ok(revoked_all)
     }
+}
+
+/// A refresh rejection is only *permanent* when the server says the
+/// grant itself is dead: HTTP 401, or HTTP 400 carrying OAuth's
+/// `invalid_grant`. Any other 400/403 may be a transient edge/CDN or
+/// request error and must not destroy the stored session.
+fn is_permanent_refresh_rejection(status: u16, message: &str) -> bool {
+    status == 401 || (status == 400 && message.contains("invalid_grant"))
 }
 
 impl TokenProvider for FxaTokenProvider {
