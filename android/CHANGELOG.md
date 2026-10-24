@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.18 (versionCode 55) — fix-wave correction, round 2
+
+- No Android code changes. This bump keeps the combined release
+  aligned with the desktop-side corrections that the v1.0.17 tag's
+  Windows/Linux builds failed on: the Linux secret-key reader now
+  tolerates a concurrent creator's write window instead of reporting
+  a corrupt key (it intermittently failed two token-provider tests in
+  CI), and `paths::home_dir` is compiled only on non-Windows targets
+  (Windows clippy flagged it as dead code). The v1.0.17 release was
+  withdrawn and is superseded by this one.
+
 ## 1.0.17 (versionCode 54) — fix-wave correction
 
 - **Material3 stays on 1.4.0-alpha10.** The 1.0.16 tag pinned
