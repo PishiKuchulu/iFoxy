@@ -21,6 +21,17 @@ async fn test_cancel_preempts_stalled_connecting_within_1_second() {
         }
     });
 
+    // Hermetic Guardian (external review, M5): the connect flow's first
+    // step fetches a proxy pass from the Guardian endpoint. Without
+    // this override that is a REAL request to vpn.mozilla.org with a
+    // dummy token; point it at the same local blackhole so the test
+    // never leaves the machine. The fetch stalls on the blackhole,
+    // which is exactly the stalled-connecting state under test.
+    std::env::set_var(
+        "IFOXY_GUARDIAN_ENDPOINT",
+        format!("http://127.0.0.1:{}", blackhole_port),
+    );
+
     let service = Arc::new(VpnService::new());
     let mut state_rx = service.subscribe_state();
 
