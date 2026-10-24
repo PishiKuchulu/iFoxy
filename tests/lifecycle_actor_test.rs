@@ -233,7 +233,9 @@ async fn test_reconnect_path_transitions_to_connected_and_ignores_stale_events()
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // the port lock deliberately serializes this test
 async fn test_50_connect_disconnect_cycles_zero_task_leak_and_port_released() {
+    let _proxy_port_guard = PROXY_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use ifoxy_windows::tunnel::h2_session::H2UpstreamSession;
     use ifoxy_windows::vpn::local_proxy::LocalProxyServer;
     use tokio::io::AsyncWriteExt;
@@ -246,10 +248,23 @@ async fn test_50_connect_disconnect_cycles_zero_task_leak_and_port_released() {
         let upstream = Arc::new(H2UpstreamSession::new_dummy("test_token"));
         let proxy = LocalProxyServer::new();
 
-        proxy
-            .start(test_port, upstream.clone())
-            .await
-            .expect("proxy bind must succeed");
+        // Bounded retry on the initial bind: on a shared/loaded machine an
+        // unrelated tenant can briefly hold the port (observed in the 2-core
+        // CI sandbox: the conflicting LISTEN socket was not owned by this
+        // process and cleared in <50 ms). Same treatment as the rebind
+        // check below; a genuinely leaked listener never clears, so the
+        // retry does not weaken the leak check.
+        let mut started = false;
+        for _ in 0..80 {
+            match proxy.start(test_port, upstream.clone()).await {
+                Ok(()) => {
+                    started = true;
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+        assert!(started, "proxy bind must succeed on port {}", test_port);
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Open a client connection and leave the SOCKS5 handshake half done,
