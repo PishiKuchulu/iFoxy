@@ -51,8 +51,13 @@ jobs:
             echo "signed=true" >> "$GITHUB_OUTPUT"
             echo "Signing keystore decoded; the release APK will be signed."
           else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "No SIGNING_KEYSTORE_BASE64 secret; the release APK will be unsigned."
+            # Fail fast with the real cause: continuing would build an
+            # unsigned APK and the failure would only surface later as
+            # a confusing "cannot stat app-release.apk" at the rename
+            # step (external review, A8). A tagged release must never
+            # ship unsigned.
+            echo "::error::SIGNING_KEYSTORE_BASE64 secret is not configured; refusing to build an unsigned release APK."
+            exit 1
           fi
 
       - name: Assemble release APK
