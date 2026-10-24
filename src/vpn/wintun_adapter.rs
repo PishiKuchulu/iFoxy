@@ -201,6 +201,7 @@ fn set_mtu_metric_netsh(adapter_name: &str, mtu: u32, metric: u32) -> Result<(),
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // Windows netsh helper; stub on other platforms
 fn set_mtu_metric_netsh(_adapter_name: &str, _mtu: u32, _metric: u32) -> Result<(), String> {
     Ok(())
 }
