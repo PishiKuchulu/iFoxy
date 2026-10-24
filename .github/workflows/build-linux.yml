@@ -38,6 +38,9 @@ jobs:
       # The ProxyOnly connect path drives the GNOME system proxy through
       # gsettings, which needs the desktop schemas and a session bus —
       # run the suite inside a throwaway D-Bus session, like a desktop.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Run tests
         run: dbus-run-session -- cargo test
 
