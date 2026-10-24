@@ -1,6 +1,7 @@
 package com.pishi.ifoxy.data
 
 import android.util.Log
+import com.pishi.ifoxy.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.text.SimpleDateFormat
@@ -41,7 +42,11 @@ object AppLogger {
     private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
 
     fun d(tag: String, message: String) {
-        Log.d(tag, message)
+        // Debug lines carry connection targets (host:port); they must
+        // not reach logcat in release builds. The ProGuard
+        // -assumenosideeffects rule strips the remaining direct Log.d
+        // calls as a second layer.
+        if (BuildConfig.DEBUG) Log.d(tag, message)
     }
 
     fun i(tag: String, message: String) {
