@@ -37,7 +37,9 @@ object HevSocks5TunnelConfig {
 
     private const val UDP_COPY_BUFFER_NUMS = 16
 
-    private const val MAX_SESSION_COUNT = 0
+    // Was 0 ("no limit") in hev semantics: the TUN layer was the one
+    // uncapped relay in the app. 512 aligns with the local proxy cap.
+    private const val MAX_SESSION_COUNT = 512
 
     private const val LIMIT_NOFILE = 65_535
 
