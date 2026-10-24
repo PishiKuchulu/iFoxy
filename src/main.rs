@@ -107,13 +107,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
         if !proceed {
             // Show a clear "why we exited" message instead of a bare error code.
-            show_fatal_error(&format!(
+            show_fatal_error(
                 "iFoxy stopped because it was not started from a secure folder.\n\n\
                  To run it safely, install with install.ps1 (which uses\n\
                  %ProgramFiles%\\iFoxy, writable only by Administrators).\n\n\
                  For a portable/development run, answer Yes at the warning or\n\
-                 set the environment variable IFOXY_ALLOW_PORTABLE=1."
-            ));
+                 set the environment variable IFOXY_ALLOW_PORTABLE=1.",
+            );
             return Err(Box::new(e));
         }
         tracing::warn!(
