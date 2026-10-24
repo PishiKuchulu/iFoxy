@@ -2,8 +2,8 @@
 
 ## 0.2.1 — External-review fix wave
 
-Post-release corrections (shipped in the combined v1.0.18 release;
-the v1.0.16/v1.0.17 tags were withdrawn): the Linux secret-key
+Post-release corrections (shipped in the combined v1.0.19 release;
+the v1.0.16/v1.0.17/v1.0.18 tags were withdrawn): the Linux secret-key
 reader retries briefly on a wrong-length key file before declaring
 corruption — a concurrent creator's `create_new` makes the file
 exist empty for a moment, and readers in that window intermittently
