@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.20 (versionCode 57) — fix-wave correction, round 4
+
+- No Android code changes. The v1.0.19 tag's Linux build failed in
+  tests: the 50-cycle proxy lifecycle test's initial bind can lose a
+  sub-50ms race against an unrelated tenant of a shared CI machine
+  briefly holding the test port (the conflicting LISTEN socket was
+  not owned by this process). The test now serializes on the proxy
+  port lock and retries the initial bind the same way the existing
+  rebind check does. The v1.0.19 release was withdrawn and is
+  superseded by this one.
+
 ## 1.0.19 (versionCode 56) — fix-wave correction, round 3
 
 - No Android code changes. The v1.0.18 tag's Windows build failed
