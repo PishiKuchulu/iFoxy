@@ -40,6 +40,7 @@ impl std::fmt::Debug for StoredSecrets {
 }
 
 // Application-specific entropy for DPAPI
+#[allow(dead_code)] // used by the Windows DPAPI module and the test fallback
 const DPAPI_ENTROPY: &[u8] = b"iFoxy-Windows-v1-UserSecrets-Entropy";
 
 #[cfg(windows)]
@@ -209,23 +210,68 @@ mod dpapi {
 
     fn load_or_create_key() -> Result<[u8; KEY_LEN], SecretError> {
         let path = key_path();
-        if let Ok(existing) = std::fs::read(&path) {
-            if existing.len() == KEY_LEN {
+        match std::fs::read(&path) {
+            Ok(existing) => {
+                if existing.len() != KEY_LEN {
+                    // A present-but-wrong key file is corruption, not a
+                    // missing key: regenerating here (the old behavior
+                    // on ANY error) silently orphaned the stored session
+                    // (external review, S3c).
+                    return Err(SecretError::Dpapi("Corrupt key file".into()));
+                }
                 let mut key = [0u8; KEY_LEN];
                 key.copy_from_slice(&existing);
-                return Ok(key);
+                Ok(key)
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let rng = SystemRandom::new();
+                let mut key = [0u8; KEY_LEN];
+                rng.fill(&mut key)
+                    .map_err(|_| SecretError::Dpapi("RNG failure".into()))?;
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                // Create with mode 0600 atomically (create_new): no
+                // write-then-chmod window where the key sits at umask
+                // permissions (S3b), and two racing creators cannot
+                // clobber each other — the loser re-reads the winner's
+                // key (S3c).
+                use std::io::Write as _;
+                use std::os::unix::fs::OpenOptionsExt;
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)
+                {
+                    Ok(mut f) => {
+                        f.write_all(&key)?;
+                        f.sync_all()?;
+                        Ok(key)
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        load_key()
+                    }
+                    Err(e) => Err(e.into()),
+                }
+            }
+            Err(e) => Err(e.into()),
         }
-        let rng = SystemRandom::new();
-        let mut key = [0u8; KEY_LEN];
-        rng.fill(&mut key)
-            .map_err(|_| SecretError::Dpapi("RNG failure".into()))?;
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    }
+
+    /// Delete the key file (used by SecretStore::clear): a leftover key
+    /// with no session is dead weight that also lets a later, unrelated
+    /// session.enc be attempted against it (external review, S3e).
+    pub fn remove_key_file() {
+        let path = key_path();
+        if path.exists() {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > 0 {
+                    let _ = std::fs::write(&path, vec![0u8; meta.len() as usize]);
+                }
+            }
+            let _ = std::fs::remove_file(&path);
         }
-        std::fs::write(&path, key)?;
-        set_owner_only(&path);
-        Ok(key)
     }
 
     fn load_key() -> Result<[u8; KEY_LEN], SecretError> {
@@ -236,11 +282,6 @@ mod dpapi {
         let mut key = [0u8; KEY_LEN];
         key.copy_from_slice(&existing);
         Ok(key)
-    }
-
-    fn set_owner_only(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 
     pub fn encrypt_bytes(plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
@@ -308,15 +349,30 @@ impl SecretStore {
         let encrypted = dpapi::encrypt_bytes(&plaintext)?;
         plaintext.zeroize();
 
-        // Write with restrictive file permissions
-        std::fs::write(&self.storage_path, &encrypted)?;
+        // Atomic write (tmp + fsync + rename) with mode 0600 from
+        // creation: a crash mid-write can no longer leave a torn
+        // session file, and there is no write-then-chmod window at
+        // umask permissions (external review, S3b/S3d). Windows keeps
+        // the plain write (DPAPI blob; ACLs come from the profile dir).
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &self.storage_path,
-                std::fs::Permissions::from_mode(0o600),
-            );
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            let tmp_path = self.storage_path.with_extension("tmp");
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            f.write_all(&encrypted)?;
+            f.sync_all()?;
+            drop(f);
+            std::fs::rename(&tmp_path, &self.storage_path)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&self.storage_path, &encrypted)?;
         }
         Ok(())
     }
@@ -349,6 +405,15 @@ impl SecretStore {
                 let _ = std::fs::write(&self.storage_path, &zeroes);
             }
             std::fs::remove_file(&self.storage_path)?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // Only the default store owns the key lifecycle: a
+            // with_path store (tests, tooling) must not delete the key
+            // the real session file still depends on.
+            if self.storage_path == crate::paths::config_dir().join("session.enc") {
+                dpapi::remove_key_file();
+            }
         }
         Ok(())
     }
