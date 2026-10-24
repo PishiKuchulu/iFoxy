@@ -152,7 +152,6 @@ fn test_wfp_killswitch_records_filter_ids_in_recovery_journal() {
 #[cfg(windows)]
 #[test]
 #[ignore = "requires admin: writes real WFP filters"]
-
 fn test_real_windows_wfp_filter_lifecycle_and_readback() {
     use ifoxy_windows::vpn::killswitch::{FirewallBackend, WindowsFirewallBackend};
     use windows_sys::Win32::Foundation::HANDLE;
@@ -237,7 +236,6 @@ fn test_real_windows_wfp_filter_lifecycle_and_readback() {
 #[cfg(windows)]
 #[test]
 #[ignore = "requires admin: writes real WFP filters"]
-
 fn test_real_windows_wfp_dynamic_session_automatic_reaping() {
     use ifoxy_windows::vpn::killswitch::{FirewallBackend, WindowsFirewallBackend};
     use windows_sys::Win32::Foundation::HANDLE;
@@ -312,7 +310,6 @@ fn test_real_windows_wfp_dynamic_session_automatic_reaping() {
 #[cfg(windows)]
 #[test]
 #[ignore = "requires admin: writes real WFP filters"]
-
 fn test_real_windows_wfp_filter_semantics_readback() {
     use ifoxy_windows::vpn::killswitch::{FirewallBackend, WindowsFirewallBackend};
     use windows_sys::core::GUID;
