@@ -489,7 +489,7 @@ impl FirewallBackend for MockFirewallBackend {
             candidates.push(WfpRuleDefinition {
                 filter_id: 1002,
                 rule_type: WfpRuleType::BlockOutboundV6,
-                weight: 5,
+                weight: 0,
                 description: "iFoxy_Block_IPv6_Leak".into(),
             });
             rule_strings.push("iFoxy_Block_IPv6_Leak".to_string());
@@ -535,7 +535,7 @@ impl FirewallBackend for MockFirewallBackend {
             candidates.push(WfpRuleDefinition {
                 filter_id: 2005,
                 rule_type: WfpRuleType::BlockOutboundV4,
-                weight: 5,
+                weight: 0,
                 description: "iFoxy_KillSwitch_Block_All".into(),
             });
             rule_strings.push("iFoxy_KillSwitch_Block_All".to_string());
@@ -580,7 +580,7 @@ pub struct KillSwitchGuard {
     backend: Arc<dyn FirewallBackend>,
     active_filters: Vec<u64>,
     active: Arc<AtomicBool>,
-    journal: Option<RecoveryJournal>,
+    journal: Option<Arc<std::sync::Mutex<RecoveryJournal>>>,
 }
 
 impl KillSwitchGuard {
@@ -595,7 +595,7 @@ impl KillSwitchGuard {
 
     pub fn new_with_journal(
         backend: Arc<dyn FirewallBackend>,
-        journal: Option<RecoveryJournal>,
+        journal: Option<Arc<std::sync::Mutex<RecoveryJournal>>>,
     ) -> Self {
         Self {
             backend,
@@ -609,11 +609,13 @@ impl KillSwitchGuard {
         self.clean();
         let filters = self.backend.install_kill_switch(policy)?;
 
-        if let Some(ref mut j) = self.journal {
-            for &fid in &filters {
-                j.record_wfp_filter(fid);
+        if let Some(ref j) = self.journal {
+            if let Ok(mut j) = j.lock() {
+                for &fid in &filters {
+                    j.record_wfp_filter(fid);
+                }
+                let _ = j.flush_to_disk();
             }
-            let _ = j.flush_to_disk();
         }
 
         self.active_filters = filters;
@@ -628,12 +630,33 @@ impl KillSwitchGuard {
     pub fn clean(&mut self) {
         if self.active.load(Ordering::SeqCst) {
             let _ = self.backend.remove_kill_switch(&self.active_filters);
-            self.active_filters.clear();
             self.active.store(false, Ordering::SeqCst);
 
             if let Some(ref j) = self.journal {
-                j.mark_clean();
+                if let Ok(mut j) = j.lock() {
+                    j.clear_wfp_filters_for(&self.active_filters);
+                }
             }
+            self.active_filters.clear();
+        }
+    }
+
+    /// Forget this guard's filters WITHOUT touching the backend: a
+    /// replacement guard has already taken over the same firewall
+    /// state (reconnect handoff, or a fresh connect superseding a
+    /// retained kill switch). Calling clean() here would remove the
+    /// replacement's protection — on Linux removal is chain-global,
+    /// so the old guard's teardown would delete the chains the new
+    /// guard just installed.
+    pub fn disarm(&mut self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.active.store(false, Ordering::SeqCst);
+            if let Some(ref j) = self.journal {
+                if let Ok(mut j) = j.lock() {
+                    j.clear_wfp_filters_for(&self.active_filters);
+                }
+            }
+            self.active_filters.clear();
         }
     }
 }
@@ -684,8 +707,14 @@ impl LinuxFirewallBackend {
     }
 
     fn run(bin: &str, args: &[&str]) -> Result<(), String> {
+        // -w: wait for the xtables lock instead of failing when another
+        // firewall manager (Docker, ufw, fail2ban) momentarily holds it
+        // (external review, H2c).
+        let mut full: Vec<&str> = Vec::with_capacity(args.len() + 1);
+        full.push("-w");
+        full.extend_from_slice(args);
         let out = std::process::Command::new(bin)
-            .args(args)
+            .args(&full)
             .output()
             .map_err(|e| format!("failed to run {} (is iptables installed?): {}", bin, e))?;
         if out.status.success() {
@@ -694,7 +723,7 @@ impl LinuxFirewallBackend {
             Err(format!(
                 "{} {} failed: {}",
                 bin,
-                args.join(" "),
+                full.join(" "),
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         }
@@ -716,14 +745,25 @@ impl LinuxFirewallBackend {
         Ok(())
     }
 
-    fn teardown_chain(bin: &str, chain: &str) {
+    /// Remove the OUTPUT jumps, flush and delete the chain. Returns
+    /// true when the chain is gone afterwards (a chain that never
+    /// existed counts as gone); false when iptables refused, so the
+    /// caller can surface a kill switch that failed to come down
+    /// instead of silently claiming success (external review, H2d).
+    fn teardown_chain(bin: &str, chain: &str) -> bool {
         while Self::run_ok(bin, &["-C", "OUTPUT", "-j", chain]) {
             if Self::run(bin, &["-D", "OUTPUT", "-j", chain]).is_err() {
                 break;
             }
         }
         let _ = Self::run(bin, &["-F", chain]);
-        let _ = Self::run(bin, &["-X", chain]);
+        match Self::run(bin, &["-X", chain]) {
+            Ok(()) => true,
+            Err(e) => {
+                // "No chain/target/match by that name" = already gone.
+                e.contains("No chain")
+            }
+        }
     }
 }
 
@@ -742,9 +782,8 @@ impl FirewallBackend for LinuxFirewallBackend {
 
         if policy.kill_switch_enabled {
             let bin = "iptables";
-            Self::prepare_chain(bin, KS_CHAIN_V4).map_err(|e| {
+            Self::prepare_chain(bin, KS_CHAIN_V4).inspect_err(|_| {
                 Self::teardown_chain(bin, KS_CHAIN_V4);
-                e
             })?;
             let mut add = |args: &[&str]| -> Result<(), String> {
                 Self::run(bin, args)?;
@@ -795,7 +834,17 @@ impl FirewallBackend for LinuxFirewallBackend {
 
         if policy.block_ipv6_leaks {
             let bin = "ip6tables";
-            Self::prepare_chain(bin, KS_CHAIN_V6)?;
+            // A failure here (ip6tables missing, IPv6 disabled in the
+            // kernel) must roll back the IPv4 chain installed above:
+            // returning Err with the DROP-terminated v4 chain still in
+            // place would leave the machine permanently offline, with
+            // no guard active whose Drop could clean it (external
+            // review, H2a).
+            if let Err(e) = Self::prepare_chain(bin, KS_CHAIN_V6) {
+                Self::teardown_chain(bin, KS_CHAIN_V6);
+                Self::teardown_chain("iptables", KS_CHAIN_V4);
+                return Err(e);
+            }
             let mut add = |args: &[&str]| -> Result<(), String> {
                 Self::run(bin, args)?;
                 ids.push(next_id);
@@ -809,6 +858,7 @@ impl FirewallBackend for LinuxFirewallBackend {
             })();
             if let Err(e) = result {
                 Self::teardown_chain(bin, KS_CHAIN_V6);
+                Self::teardown_chain("iptables", KS_CHAIN_V4);
                 return Err(e);
             }
         }
@@ -818,9 +868,16 @@ impl FirewallBackend for LinuxFirewallBackend {
     }
 
     fn remove_kill_switch(&self, _filter_ids: &[u64]) -> Result<(), String> {
-        Self::teardown_chain("iptables", KS_CHAIN_V4);
-        Self::teardown_chain("ip6tables", KS_CHAIN_V6);
-        tracing::info!("Linux kill switch removed");
-        Ok(())
+        let v4_gone = Self::teardown_chain("iptables", KS_CHAIN_V4);
+        let v6_gone = Self::teardown_chain("ip6tables", KS_CHAIN_V6);
+        if v4_gone && v6_gone {
+            tracing::info!("Linux kill switch removed");
+            Ok(())
+        } else {
+            Err(format!(
+                "kill switch teardown incomplete (IPv4 chain removed: {}, IPv6 chain removed: {})",
+                v4_gone, v6_gone
+            ))
+        }
     }
 }
