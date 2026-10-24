@@ -42,14 +42,25 @@ object UpstreamTrust {
 
         var systemCount = 0
         runCatching {
-            val system = KeyStore.getInstance("AndroidCAStore").apply { load(null, null) }
-            for (alias in system.aliases()) {
-                val cert = system.getCertificate(alias) as? X509Certificate ?: continue
-                merged.setCertificateEntry("system:$alias", cert)
+            // Take the platform anchors from the DEFAULT trust manager
+            // instead of enumerating AndroidCAStore directly: the raw
+            // store also contains user-installed CAs, which the platform
+            // policy for this app (no networkSecurityConfig opt-in)
+            // does not trust — the merged store silently widened trust
+            // to them (external review, A5).
+            val platformTmf = TrustManagerFactory
+                .getInstance(TrustManagerFactory.getDefaultAlgorithm())
+                .apply { init(null as KeyStore?) }
+            val platformTm = platformTmf.trustManagers
+                .filterIsInstance<javax.net.ssl.X509TrustManager>()
+                .firstOrNull()
+            val issuers = platformTm?.acceptedIssuers ?: emptyArray()
+            for ((index, cert) in issuers.withIndex()) {
+                merged.setCertificateEntry("system:$index", cert)
                 systemCount++
             }
         }.onFailure {
-            AppLogger.w(TAG, "could not read the system CA store; relying on the bundled roots only", it)
+            AppLogger.w(TAG, "could not read the platform trust anchors; relying on the bundled roots only", it)
         }
 
         var bundledCount = 0
