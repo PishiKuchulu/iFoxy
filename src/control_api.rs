@@ -126,6 +126,21 @@ pub async fn read_http_request<R: AsyncReadExt + Unpin>(
 
 pub const CSP_HEADER_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-ancestors 'none';";
 
+/// Build a complete HTTP response whose Content-Length is DERIVED
+/// from the body. Several hand-written literals in this server carried
+/// wrong lengths (42 for a 46-byte body, 17 for 19-byte bodies), which
+/// truncated the response body for the client (external review, H4);
+/// deriving the length makes that class of bug impossible here.
+fn respond(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        content_type,
+        body.len(),
+        body
+    )
+}
+
 pub async fn run_hardened_ui_server(
     state: Arc<AppState>,
     listener: TcpListener,
@@ -169,12 +184,12 @@ pub async fn run_hardened_ui_server(
                 let valid_3 = "127.0.0.1";
                 let valid_4 = "localhost";
                 if host != &valid_1 && host != &valid_2 && host != valid_3 && host != valid_4 {
-                    let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nInvalid Host Header";
+                    let resp = respond("400 Bad Request", "text/plain", "Invalid Host Header");
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
             } else {
-                let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nMissing Host Header";
+                let resp = respond("400 Bad Request", "text/plain", "Missing Host Header");
                 let _ = socket.write_all(resp.as_bytes()).await;
                 return;
             }
@@ -185,7 +200,7 @@ pub async fn run_hardened_ui_server(
                 let valid_orig_2 = format!("http://localhost:{}", port);
                 let valid_orig_3 = "null"; // local file / webview origin
                 if origin != &valid_orig_1 && origin != &valid_orig_2 && origin != valid_orig_3 {
-                    let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 22\r\nConnection: close\r\n\r\nCross-Origin Forbidden";
+                    let resp = respond("403 Forbidden", "text/plain", "Cross-Origin Forbidden");
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
@@ -194,7 +209,7 @@ pub async fn run_hardened_ui_server(
             // Reject external Sec-Fetch-Site: cross-site
             if let Some(fetch_site) = req.headers.get("sec-fetch-site") {
                 if fetch_site.eq_ignore_ascii_case("cross-site") {
-                    let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 22\r\nConnection: close\r\n\r\nCross-Origin Forbidden";
+                    let resp = respond("403 Forbidden", "text/plain", "Cross-Origin Forbidden");
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
@@ -270,7 +285,7 @@ pub async fn run_hardened_ui_server(
                     .unwrap_or("");
                 let is_valid = bool::from(client_token.as_bytes().ct_eq(expected_token.as_bytes()));
                 if !is_valid {
-                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 42\r\nConnection: close\r\n\r\n{\"success\":false,\"error\":\"Unauthorized token\"}";
+                    let resp = respond("401 Unauthorized", "application/json", "{\"success\":false,\"error\":\"Unauthorized token\"}");
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
                 }
