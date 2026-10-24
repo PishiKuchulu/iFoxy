@@ -145,14 +145,33 @@ pub fn request_elevation() {
     }
     if let Ok(exe) = std::env::current_exe() {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        match std::process::Command::new("pkexec")
-            .arg("env")
-            .arg("IFOXY_ELEVATION_TRIED=1")
-            .arg(&exe)
-            .args(&args)
-            .spawn()
-        {
-            Ok(_) => return,
+        // pkexec scrubs the environment and would set HOME to root's,
+        // which used to land the session file and recovery journal in
+        // /root/.config/iFoxy while the docs promise the invoking
+        // user's config dir (external review, H5). Pass the user's
+        // session environment through explicitly: home/XDG dirs keep
+        // state in the user's tree, and the display/bus variables give
+        // the elevated GUI its session even on pkexec versions that do
+        // not propagate them.
+        let mut cmd = std::process::Command::new("pkexec");
+        cmd.arg("env").arg("IFOXY_ELEVATION_TRIED=1");
+        for var in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_RUNTIME_DIR",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ] {
+            if let Ok(value) = std::env::var(var) {
+                cmd.arg(format!("{}={}", var, value));
+            }
+        }
+        match cmd.arg(&exe).args(&args).spawn() {
+            Ok(_) => {},
             Err(e) => {
                 eprintln!(
                     "iFoxy needs administrator rights for the TUN device and routes.\n\
@@ -204,7 +223,7 @@ pub struct RouteGuard {
     edge_bypass_route: Option<RouteDefinition>,
     physical_if_idx: u32,
     wintun_if_idx: u32,
-    journal: Option<RecoveryJournal>,
+    journal: Option<Arc<std::sync::Mutex<RecoveryJournal>>>,
 }
 
 impl RouteGuard {
@@ -214,7 +233,7 @@ impl RouteGuard {
         physical_if_idx: u32,
         wintun_if_idx: u32,
         backend: Arc<dyn NetworkBackend>,
-        journal: Option<RecoveryJournal>,
+        journal: Option<Arc<std::sync::Mutex<RecoveryJournal>>>,
     ) -> Self {
         Self {
             backend,
@@ -256,9 +275,15 @@ impl RouteGuard {
             self.physical_if_idx = new_physical_if_idx;
             self.edge_bypass_route = Some(edge_route.clone());
 
-            if let Some(ref mut j) = self.journal {
-                j.record_edge_bypass(edge_route.destination, new_physical_gw, new_physical_if_idx);
-                let _ = j.flush_to_disk();
+            if let Some(ref j) = self.journal {
+                if let Ok(mut j) = j.lock() {
+                    j.record_edge_bypass(
+                        edge_route.destination,
+                        new_physical_gw,
+                        new_physical_if_idx,
+                    );
+                    let _ = j.flush_to_disk();
+                }
             }
         }
         Ok(())
@@ -275,7 +300,9 @@ impl RouteGuard {
         }
 
         if let Some(ref journal) = self.journal {
-            journal.mark_clean();
+            if let Ok(mut j) = journal.lock() {
+                j.clear_routes_and_bypass();
+            }
         }
     }
 }
@@ -317,15 +344,20 @@ impl RouteManager {
         backend: Arc<dyn NetworkBackend>,
         use_journal: bool,
     ) -> Result<RouteGuard, RouteError> {
-        let mut journal = if use_journal {
-            let mut j = RecoveryJournal::new(RecoveryJournal::default_path());
-            j.record_edge_bypass(edge_ip, physical_gateway, physical_if_idx);
-            // Write-ahead (S-6): flush to disk BEFORE the route below is
-            // actually added. Previously the journal was only flushed once,
-            // after every route had already been installed, so a crash at
-            // any point during this function left the just-added routes
-            // with nothing on disk to recover them.
-            let _ = j.flush_to_disk();
+        let journal = if use_journal {
+            // The shared journal instance: proxy, kill switch and DNS
+            // records live in the same file without overwriting each
+            // other (external review, S6b).
+            let j = RecoveryJournal::shared_default();
+            if let Ok(mut j) = j.lock() {
+                j.record_edge_bypass(edge_ip, physical_gateway, physical_if_idx);
+                // Write-ahead (S-6): flush to disk BEFORE the route below is
+                // actually added. Previously the journal was only flushed once,
+                // after every route had already been installed, so a crash at
+                // any point during this function left the just-added routes
+                // with nothing on disk to recover them.
+                let _ = j.flush_to_disk();
+            }
             Some(j)
         } else {
             None
@@ -339,8 +371,10 @@ impl RouteManager {
             metric: 1,
         };
         if let Err(e) = backend.add_route(&edge_route, physical_if_idx) {
-            if let Some(j) = journal {
-                j.mark_clean();
+            if let Some(j) = &journal {
+                if let Ok(mut j) = j.lock() {
+                    j.clear_routes_and_bypass();
+                }
             }
             return Err(e);
         }
@@ -352,12 +386,14 @@ impl RouteManager {
         for route in routes {
             match backend.add_route(&route, wintun_if_idx) {
                 Ok(()) => {
-                    if let Some(ref mut j) = journal {
-                        j.record_route(route.clone(), wintun_if_idx);
-                        // Write-ahead per route (S-6): flush immediately so
-                        // a crash right after this add still leaves a
-                        // journal on disk that knows about it.
-                        let _ = j.flush_to_disk();
+                    if let Some(ref j) = journal {
+                        if let Ok(mut j) = j.lock() {
+                            j.record_route(route.clone(), wintun_if_idx);
+                            // Write-ahead per route (S-6): flush immediately so
+                            // a crash right after this add still leaves a
+                            // journal on disk that knows about it.
+                            let _ = j.flush_to_disk();
+                        }
                     }
                     installed.push(route);
                 }
@@ -367,8 +403,10 @@ impl RouteManager {
                         let _ = backend.delete_route(r, wintun_if_idx);
                     }
                     let _ = backend.delete_route(&edge_route, physical_if_idx);
-                    if let Some(j) = journal {
-                        j.mark_clean();
+                    if let Some(j) = &journal {
+                        if let Ok(mut j) = j.lock() {
+                            j.clear_routes_and_bypass();
+                        }
                     }
                     return Err(err);
                 }
@@ -376,7 +414,9 @@ impl RouteManager {
         }
 
         if let Some(ref j) = journal {
-            let _ = j.flush_to_disk();
+            if let Ok(j) = j.lock() {
+                let _ = j.flush_to_disk();
+            }
         }
 
         Ok(RouteGuard::new(
