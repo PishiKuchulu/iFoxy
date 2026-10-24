@@ -9,6 +9,7 @@
 //! invoking user (PKEXEC_UID) with their session bus.
 
 use crate::vpn::recovery_journal::RecoveryJournal;
+use std::sync::Arc;
 #[cfg(windows)]
 use crate::vpn::registry::WinRegistry;
 #[cfg(windows)]
@@ -110,8 +111,7 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
         .filter(|&uid| uid != 0);
     let am_root = unsafe { libc::geteuid() } == 0;
 
-    let out = if am_root && desktop_uid.is_some() {
-        let uid = desktop_uid.unwrap();
+    let out = if let (true, Some(uid)) = (am_root, desktop_uid) {
         let runtime_dir = format!("/run/user/{}", uid);
         let bus = format!("unix:path={}/bus", runtime_dir);
         let mut cmd = std::process::Command::new("runuser");
@@ -181,7 +181,7 @@ pub fn restore_system_proxy(backup: Option<&ProxySettingsBackup>) -> Result<(), 
 pub struct SystemProxyGuard {
     active: bool,
     backup: Option<ProxySettingsBackup>,
-    journal: Option<RecoveryJournal>,
+    journal: Option<Arc<std::sync::Mutex<RecoveryJournal>>>,
 }
 
 impl SystemProxyGuard {
@@ -192,10 +192,15 @@ impl SystemProxyGuard {
         // journal BEFORE overwriting them. Previously the backup lived only
         // in memory, so a crash in proxy-only mode left the system proxy
         // pointing at a dead port with no on-disk record to restore from.
-        let mut journal = RecoveryJournal::new(RecoveryJournal::default_path());
-        journal.record_proxy_backup(backup.clone());
-        if let Err(e) = journal.flush_to_disk() {
-            tracing::warn!("Failed to write proxy recovery journal: {:?}", e);
+        // The journal is the shared instance, so this record coexists with
+        // the route / kill-switch / DNS records instead of overwriting
+        // them (external review, S6b).
+        let journal = RecoveryJournal::shared_default();
+        if let Ok(mut j) = journal.lock() {
+            j.record_proxy_backup(backup.clone());
+            if let Err(e) = j.flush_to_disk() {
+                tracing::warn!("Failed to write proxy recovery journal: {:?}", e);
+            }
         }
 
         apply_system_proxy(port)?;
@@ -210,11 +215,28 @@ impl SystemProxyGuard {
 
     pub fn disable(&mut self) {
         if self.active {
-            let _ = restore_system_proxy(self.backup.as_ref());
-            tracing::info!("System Proxy restored to previous settings");
             self.active = false;
-            if let Some(ref j) = self.journal {
-                j.mark_clean();
+            match restore_system_proxy(self.backup.as_ref()) {
+                Ok(()) => {
+                    tracing::info!("System Proxy restored to previous settings");
+                    if let Some(ref j) = self.journal {
+                        if let Ok(mut j) = j.lock() {
+                            j.clear_proxy_backup();
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Keep the journal record: the next startup's crash
+                    // recovery will replay this restore. Marking the
+                    // journal clean here (the old behavior) destroyed the
+                    // only on-disk copy of the user's original settings
+                    // exactly when the restore had failed (external
+                    // review, S6d).
+                    tracing::error!(
+                        "System Proxy restore FAILED: {:?} — original settings kept in the recovery journal for next-startup replay",
+                        e
+                    );
+                }
             }
         }
     }
