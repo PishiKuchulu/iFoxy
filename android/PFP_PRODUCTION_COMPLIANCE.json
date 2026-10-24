@@ -1,6 +1,6 @@
 {
   "date": "2026-10-21",
-  "finalStatus": "PRODUCTION READY WITH LIMITATIONS",
+  "finalStatus": "EXPERIMENTAL - NOT PRODUCTION READY (hardening delivery verified in CI; see README status)",
   "gates": {
     "artifactHygiene": {
       "evidence": [
@@ -16,7 +16,7 @@
         "BLD-FX-10 CI runs on push to main, runs unit tests, uploads lint report; release lint check re-enabled"
       ],
       "limitations": [
-        "Full Gradle build (testDebugUnitTest / assembleDebug) could not run in the authoring sandbox: the Gradle daemon IPC fails in that environment on JDK 17 and 21 (documented environment limitation, not a project defect). CI now runs these on every push; first green CI run is the remaining evidence."
+        "Full Gradle build (testDebugUnitTest / assembleDebug) could not run in the authoring sandbox: the Gradle daemon IPC fails in that environment on JDK 17 and 21 (documented environment limitation, not a project defect). CI runs these on every push and has been green through the v1.0.15 tagged release (2026-10-23); the sandbox limitation is an authoring-environment note only."
       ],
       "status": "PASS WITH LIMITATIONS"
     },
@@ -31,7 +31,7 @@
         "SEC-FX-01 password/2FA code removed from rememberSaveable (LoginScreen)",
         "SEC-FX-02 widget toggle guarded by per-install token (WidgetToggleGuard)",
         "SEC-FX-03 cookie Secure/Path honoured; challenge cookies keep issuing domain",
-        "SEC-FX-04 TUN fail-closed on IPv6 route failure; setAllowBypass(false) on Q+",
+        "SEC-FX-04 TUN fail-closed on IPv6 route failure (allowBypass is opt-in-only in the Android API and is never called; an earlier draft of this line claimed a setAllowBypass(false) call that does not exist - corrected in the 1.0.8 changelog)",
         "SEC-FX-05 non-loopback proxy bind gated by risk confirmation + startup warning log",
         "SEC-FX-12 log redaction expanded (authorization/cookie/JSON token fields); real-IP cache moved to encrypted store"
       ],
