@@ -1,5 +1,5 @@
 pub const APP_NAME: &str = "iFoxy";
-pub const APP_VERSION: &str = "0.2.0";
+pub const APP_VERSION: &str = "0.2.1";
 
 pub mod auth;
 pub mod control_api;
