@@ -6,6 +6,7 @@ use crate::service::vpn_service::{ConnectionMode, ConnectionState, VpnService};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use zeroize::Zeroize;
 
 pub fn load_stored_session() -> Option<StoredSecrets> {
     SecretStore::new().load().ok().flatten()
@@ -28,6 +29,23 @@ pub struct AppState {
     pub session: Arc<Mutex<Option<StoredSecrets>>>,
     pub pending_2fa: Arc<Mutex<Option<(String, String)>>>, // (session_token, email)
     pub cached_countries: Arc<Mutex<Vec<VpnCountry>>>,
+}
+
+/// Replace anything shaped like an email address with a masked form
+/// (`f***@example.com`) for log output.
+fn mask_emails(msg: &str) -> String {
+    msg.split(' ')
+        .map(|word| {
+            if let Some((local, domain)) = word.split_once('@') {
+                if !local.is_empty() && domain.contains('.') {
+                    let first = local.chars().next().unwrap_or('*');
+                    return format!("{}***@{}", first, domain);
+                }
+            }
+            word.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn format_auth_error(e: AuthError) -> String {
@@ -75,15 +93,38 @@ impl AppState {
     }
 
     pub fn log(&self, msg: &str) {
-        tracing::info!("{}", msg);
+        // Mask email addresses and cap the buffer: log lines used to
+        // embed the account email in clear text and the Vec grew for
+        // the whole process lifetime (external review, S9). The logs
+        // are user-exportable, so the masked form is what gets stored
+        // and traced alike.
+        let masked = mask_emails(msg);
+        tracing::info!("{}", masked);
         if let Ok(mut lock) = self.logs.lock() {
-            lock.push(msg.to_string());
+            lock.push(masked);
+            const MAX_LOG_LINES: usize = 500;
+            if lock.len() > MAX_LOG_LINES {
+                let excess = lock.len() - MAX_LOG_LINES;
+                lock.drain(..excess);
+            }
         }
     }
 
     pub async fn dispatch_action(&self, action: &str, payload: Value) -> Value {
         match action {
             "get_auth_state" => {
+                // The token provider is the credential source of truth:
+                // when a permanent refresh failure clears its tokens and
+                // the stored session, this view must not keep reporting
+                // the stale AppState.session as authenticated (external
+                // review, S7). Sync the cached session with it.
+                if self.token_provider.current_tokens().await.is_none() {
+                    *self.session.lock().unwrap() = None;
+                    return json!({
+                        "is_authenticated": false,
+                        "email": null,
+                    });
+                }
                 let session = self.session.lock().unwrap().clone();
                 match session {
                     Some(s) => json!({
@@ -103,7 +144,7 @@ impl AppState {
                     .unwrap_or_default()
                     .trim()
                     .to_string();
-                let password = payload["password"].as_str().unwrap_or_default().to_string();
+                let mut password = payload["password"].as_str().unwrap_or_default().to_string();
 
                 if email.is_empty() || password.is_empty() {
                     return json!({ "success": false, "error": "Email and password are required" });
@@ -114,7 +155,9 @@ impl AppState {
                     email
                 ));
 
-                match self.fxa_client.login(&email, &password).await {
+                let login_result = self.fxa_client.login(&email, &password).await;
+                password.zeroize();
+                match login_result {
                     Ok(LoginResult::Requires2Fa { session_token }) => {
                         *self.pending_2fa.lock().unwrap() = Some((session_token, email.clone()));
                         self.log("Two-factor confirmation code sent to email");
@@ -192,10 +235,18 @@ impl AppState {
             "logout" => {
                 self.vpn_service.cancel();
                 let _ = self.vpn_service.disconnect();
-                let _ = self.token_provider.sign_out().await;
+                let revoked = self
+                    .token_provider
+                    .sign_out()
+                    .await
+                    .unwrap_or(false);
                 clear_stored_session();
                 *self.session.lock().unwrap() = None;
-                self.log("Signed out from Firefox account, revoked server token, and cleared credentials");
+                if revoked {
+                    self.log("Signed out from Firefox account, revoked server token, and cleared credentials");
+                } else {
+                    self.log("Signed out from Firefox account and cleared local credentials; server token revocation did not complete");
+                }
                 json!({ "success": true })
             }
             "fetch_server_list" => {
