@@ -88,6 +88,8 @@ pub struct LinuxTunDevice {
     pub adapter_index: u32,
     pub ip: Ipv4Addr,
     dns_guard: DnsGuard,
+    /// Reused receive buffer (see receive_blocking).
+    recv_buf: std::sync::Mutex<Vec<u8>>,
 }
 
 impl LinuxTunDevice {
@@ -171,6 +173,7 @@ impl LinuxTunDevice {
             adapter_index,
             ip: assigned_ip,
             dns_guard,
+            recv_buf: std::sync::Mutex::new(vec![0u8; 65536]),
         })
     }
 
@@ -196,7 +199,19 @@ impl LinuxTunDevice {
                     }
                 }
                 match std::fs::write("/etc/resolv.conf", new_content) {
-                    Ok(()) => DnsGuard::ResolvConf { original },
+                    Ok(()) => {
+                        // Journal the original for crash recovery: if
+                        // the process dies before Drop runs, the next
+                        // startup restores it from the journal instead
+                        // of leaving DNS pointed at a dead interface
+                        // (external review, M1).
+                        let journal =
+                            crate::vpn::recovery_journal::RecoveryJournal::shared_default();
+                        let mut j = journal.lock().unwrap_or_else(|p| p.into_inner());
+                        j.record_resolv_conf_backup(original.clone());
+                        let _ = j.flush_to_disk();
+                        DnsGuard::ResolvConf { original }
+                    }
                     Err(e) => {
                         tracing::warn!("could not rewrite /etc/resolv.conf: {}", e);
                         DnsGuard::None
@@ -218,7 +233,12 @@ impl Drop for LinuxTunDevice {
                 let _ = run_cmd("resolvectl", &["revert", &if_index.to_string()]);
             }
             DnsGuard::ResolvConf { original } => {
-                let _ = std::fs::write("/etc/resolv.conf", original);
+                if std::fs::write("/etc/resolv.conf", original).is_ok() {
+                    let journal =
+                        crate::vpn::recovery_journal::RecoveryJournal::shared_default();
+                    let mut j = journal.lock().unwrap_or_else(|p| p.into_inner());
+                    j.clear_resolv_conf_backup();
+                }
             }
             DnsGuard::None => {}
         }
@@ -238,17 +258,25 @@ impl TunDeviceOps for LinuxTunDevice {
 
     fn send_packet(&self, packet: &[u8]) {
         let mut file = &self.file;
-        let _ = file.write_all(packet);
+        if let Err(e) = file.write_all(packet) {
+            // Was silently discarded (external review, M1): a failing
+            // TUN write means outbound traffic is blackholing, which
+            // must at least be visible in the log.
+            tracing::warn!("TUN write failed ({} bytes): {}", packet.len(), e);
+        }
     }
 
     fn receive_blocking(&self) -> Result<Vec<u8>, String> {
         let mut file = &self.file;
-        let mut buf = vec![0u8; 65536];
+        // Reuse one buffer instead of zero-filling a fresh 64 KiB Vec
+        // per packet (external review, M1); only the received bytes
+        // are copied out.
+        let mut buf = self
+            .recv_buf
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match file.read(&mut buf) {
-            Ok(n) => {
-                buf.truncate(n);
-                Ok(buf)
-            }
+            Ok(n) => Ok(buf[..n].to_vec()),
             Err(e) => Err(e.to_string()),
         }
     }
