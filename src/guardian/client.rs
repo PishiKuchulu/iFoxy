@@ -53,7 +53,15 @@ pub struct GuardianClient {
 
 impl GuardianClient {
     pub fn new() -> Self {
-        Self::with_endpoint(GUARDIAN_ENDPOINT_DEFAULT)
+        // IFOXY_GUARDIAN_ENDPOINT overrides the endpoint (tests,
+        // staging): the actor-cancellation test used to fire a real
+        // request at vpn.mozilla.org on every run because there was no
+        // way to point the production-constructed client elsewhere
+        // (external review, M5).
+        match std::env::var("IFOXY_GUARDIAN_ENDPOINT") {
+            Ok(ep) if !ep.trim().is_empty() => Self::with_endpoint(ep.trim()),
+            _ => Self::with_endpoint(GUARDIAN_ENDPOINT_DEFAULT),
+        }
     }
 
     pub fn with_endpoint(endpoint: &str) -> Self {
