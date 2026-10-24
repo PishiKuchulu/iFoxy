@@ -116,7 +116,10 @@ fn test_wfp_killswitch_records_filter_ids_in_recovery_journal() {
 
     let mock_firewall = Arc::new(MockFirewallBackend::new());
     let journal = RecoveryJournal::new(journal_path.clone());
-    let mut guard = KillSwitchGuard::new_with_journal(mock_firewall.clone(), Some(journal));
+    let mut guard = KillSwitchGuard::new_with_journal(
+        mock_firewall.clone(),
+        Some(Arc::new(std::sync::Mutex::new(journal))),
+    );
 
     let policy = KillSwitchPolicy {
         kill_switch_enabled: true,
