@@ -119,7 +119,9 @@ class QuickConnectWidgetProvider : AppWidgetProvider() {
             }
 
             val bgRes = when (state) {
-                ConnectionState.CONNECTED, ConnectionState.DISCONNECTED ->
+                ConnectionState.CONNECTED ->
+                    if (isDark) R.drawable.widget_bg_connected_dark else R.drawable.widget_bg_connected_light
+                ConnectionState.DISCONNECTED ->
                     if (isDark) R.drawable.widget_bg_disconnected_dark else R.drawable.widget_bg_disconnected_light
                 ConnectionState.CONNECTING ->
                     if (isDark) R.drawable.widget_bg_connecting_dark else R.drawable.widget_bg_connecting_light
