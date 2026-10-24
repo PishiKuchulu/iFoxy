@@ -208,22 +208,43 @@ mod dpapi {
         crate::paths::config_dir().join("session.key")
     }
 
-    fn load_or_create_key() -> Result<[u8; KEY_LEN], SecretError> {
-        let path = key_path();
-        match std::fs::read(&path) {
-            Ok(existing) => {
-                if existing.len() != KEY_LEN {
+    /// Read the key file, tolerating a concurrent creator's brief
+    /// write window: `create_new` makes the file exist (empty) a
+    /// moment before `write_all` lands, and a reader in that window
+    /// must not mistake the in-flight key for corruption. A file that
+    /// is still the wrong length after the retry window IS corruption
+    /// (S3c) and errors. Returns Ok(None) when the file is absent.
+    fn read_key_file(path: &std::path::Path) -> Result<Option<[u8; KEY_LEN]>, SecretError> {
+        for attempt in 0..100 {
+            match std::fs::read(path) {
+                Ok(existing) => {
+                    if existing.len() == KEY_LEN {
+                        let mut key = [0u8; KEY_LEN];
+                        key.copy_from_slice(&existing);
+                        return Ok(Some(key));
+                    }
+                    if attempt < 99 {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
                     // A present-but-wrong key file is corruption, not a
                     // missing key: regenerating here (the old behavior
                     // on ANY error) silently orphaned the stored session
                     // (external review, S3c).
                     return Err(SecretError::Dpapi("Corrupt key file".into()));
                 }
-                let mut key = [0u8; KEY_LEN];
-                key.copy_from_slice(&existing);
-                Ok(key)
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        }
+        unreachable!()
+    }
+
+    fn load_or_create_key() -> Result<[u8; KEY_LEN], SecretError> {
+        let path = key_path();
+        match read_key_file(&path) {
+            Ok(Some(key)) => Ok(key),
+            Ok(None) => {
                 let rng = SystemRandom::new();
                 let mut key = [0u8; KEY_LEN];
                 rng.fill(&mut key)
@@ -255,7 +276,7 @@ mod dpapi {
                     Err(e) => Err(e.into()),
                 }
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -275,13 +296,10 @@ mod dpapi {
     }
 
     fn load_key() -> Result<[u8; KEY_LEN], SecretError> {
-        let existing = std::fs::read(key_path())?;
-        if existing.len() != KEY_LEN {
-            return Err(SecretError::Dpapi("Corrupt key file".into()));
+        match read_key_file(&key_path())? {
+            Some(key) => Ok(key),
+            None => Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()),
         }
-        let mut key = [0u8; KEY_LEN];
-        key.copy_from_slice(&existing);
-        Ok(key)
     }
 
     pub fn encrypt_bytes(plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
