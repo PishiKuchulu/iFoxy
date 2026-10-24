@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 fn env_path(var: &str) -> Option<PathBuf> {
-    std::env::var(var).ok().filter(|v| v.len() > 0).map(PathBuf::from)
+    std::env::var(var).ok().filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 fn home_dir() -> PathBuf {
