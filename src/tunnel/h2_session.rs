@@ -193,6 +193,10 @@ impl H2UpstreamSession {
         bind_if_idx: Option<u32>,
         custom_roots: Option<RootCertStore>,
     ) -> Result<Self, TunnelError> {
+        // Interface binding of the upstream socket is Windows-only for
+        // now; acknowledge the parameter on other platforms.
+        #[cfg(not(windows))]
+        let _ = bind_if_idx;
         let root_store = match custom_roots {
             Some(roots) => roots,
             None => {
