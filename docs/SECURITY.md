@@ -42,9 +42,9 @@ iFoxy runs on Windows as a native client providing Layer 3 transit tunneling and
 - **Safe DLL Search Order:**
   - `enforce_safe_dll_search()` calls Win32 `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` immediately upon startup, neutralizing DLL preloading / search-order hijacking from the application directory or `%TEMP%`.
 - **Wintun & WebView2Loader Cryptographic Integrity:**
-  - `wintun.dll` and `WebView2Loader.dll` search paths strictly exclude untrusted directories.
-  - `wintun.dll` is verified against its SHA-256 digest (`e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce`) before loading.
-  - `WebView2Loader.dll` is verified against its SHA-256 digest (`86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5`) at startup. **This is defense in depth only**: a DLL that is an import of the executable is loaded by the OS before `main` runs, and a hash check followed by a later load is a check-then-use race.
+  - `wintun.dll` search paths strictly exclude untrusted directories, and `wintun.dll` is verified against its SHA-256 digest (`e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce`) before loading.
+  - The WebView2 loader is **statically linked** (`WebView2LoaderStatic.lib`, from the official Microsoft WebView2 SDK) — there is no `WebView2Loader.dll` in the product anymore. Both vendored binaries are committed to the repository with recorded provenance: `wintun.dll` (WireGuard LLC, digest above) and `WebView2LoaderStatic.lib` (Microsoft WebView2 SDK, SHA-256 `89c6b872783b8f6c3cedbff618adb42082d455c615453ae10cfc753f1e8f25d8`).
+  - If a stray `WebView2Loader.dll` nevertheless appears next to the executable, it is still verified against its known digest (`86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5`) at startup and rejected on mismatch. **This is defense in depth only**: a DLL loaded as an import is loaded by the OS before `main` runs, and a hash check followed by a later load is a check-then-use race.
   - **Install location policy (the real protection):** once elevated, the application asks for explicit confirmation (default No) unless its folder is under `%ProgramFiles%` (administrator-writable only). Development or portable use means answering Yes or setting `IFOXY_ALLOW_PORTABLE=1`. The question is shown by the elevated process only, once per run. A non-admin attacker cannot replace files inside Program Files, which closes both the DLL-planting and the executable-replacement paths. Use `install.ps1` to install with an admin-only ACL.
   - **Not done:** the whole process, including the WebView2 engine, still runs elevated (no unelevated UI + elevated service split), and there is no Authenticode verification.
 
@@ -66,7 +66,7 @@ iFoxy runs on Windows as a native client providing Layer 3 transit tunneling and
   - DHCP Permit: Weight 14
   - Upstream Edge Endpoint Permit: Weight 13
   - Wintun Virtual Adapter Permit: Weight 12
-  - Block All Outbound IPv4: Weight 5 (Default block)
+  - Block All Outbound IPv4: Weight 0 (Default block)
 - **IPv6 Leak Prevention:**
   - IPv6 outbound traffic is blocked on non-loopback interfaces when the tunnel is active.
 
