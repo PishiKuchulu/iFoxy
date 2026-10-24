@@ -2,6 +2,15 @@
 
 ## 0.2.1 — External-review fix wave
 
+Post-release corrections (shipped in the combined v1.0.18 release;
+the v1.0.16/v1.0.17 tags were withdrawn): the Linux secret-key
+reader retries briefly on a wrong-length key file before declaring
+corruption — a concurrent creator's `create_new` makes the file
+exist empty for a moment, and readers in that window intermittently
+failed saves (and two token-provider tests in CI); `paths::home_dir`
+is now compiled only on non-Windows targets, where it is used
+(Windows clippy `-D warnings` flagged it as dead code).
+
 Fixes from a full external code review of the 0.2.0 / Android 1.0.15
 tree. Every finding was re-verified against the source before being
 acted on; the review's verdicts and the two places where it was wrong
