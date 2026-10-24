@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 const FXA_AUTH_SERVER: &str = "https://api.accounts.firefox.com/v1";
 const FIREFOX_CLIENT_ID: &str = "5882386c6d801776";
@@ -73,7 +74,32 @@ impl FxaClient {
     }
 
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
-        let auth_pw = derive_auth_pw(email, password)?;
+        match self.login_once(email, password).await {
+            Err(AuthError::Api { status, message }) => {
+                // FxA errno 120 "Incorrect email case": the account's
+                // canonical email casing differs from what the user
+                // typed, and the response body carries the canonical
+                // address. Retry once with it instead of failing the
+                // login (external review, S8).
+                if status == 400 {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&message) {
+                        if v["errno"].as_u64() == Some(120) {
+                            if let Some(canonical) = v["email"].as_str() {
+                                if canonical != email {
+                                    return self.login_once(canonical, password).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(AuthError::Api { status, message })
+            }
+            other => other,
+        }
+    }
+
+    async fn login_once(&self, email: &str, password: &str) -> Result<LoginResult, AuthError> {
+        let mut auth_pw = derive_auth_pw(email, password)?;
         let url = format!("{}/account/login", self.auth_server);
 
         let body = serde_json::json!({
@@ -81,6 +107,9 @@ impl FxaClient {
             "authPW": auth_pw,
             "verificationMethod": "email-2fa"
         });
+        // The derived password equivalent has done its job once it is
+        // in the request body; wipe our copy (external review, S9).
+        auth_pw.zeroize();
 
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
@@ -295,14 +324,26 @@ impl FxaClient {
         headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let _ = self
+        // The result used to be discarded entirely, so callers logged
+        // "revoked" even when the destroy call never landed (external
+        // review, S7). Surface transport and HTTP failures.
+        let res = self
             .client
             .post(&url)
             .headers(headers)
             .json(&body)
             .send()
-            .await;
-        Ok(())
+            .await?;
+        let status = res.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let text = res.text().await.unwrap_or_default();
+            Err(AuthError::Api {
+                status: status.as_u16(),
+                message: text,
+            })
+        }
     }
 }
 
