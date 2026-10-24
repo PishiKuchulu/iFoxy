@@ -69,6 +69,45 @@ impl MockAuthServer {
                             );
                             let _ = stream.write_all(resp.as_bytes()).await;
                         }
+                        "forbidden_403" => {
+                            let resp_body = serde_json::json!({
+                                "error": "forbidden",
+                                "message": "Request forbidden by edge"
+                            })
+                            .to_string();
+                            let resp = format!(
+                                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                resp_body.len(),
+                                resp_body
+                            );
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        }
+                        "bad_request_400_other" => {
+                            let resp_body = serde_json::json!({
+                                "error": "invalid_request",
+                                "message": "Malformed request at edge"
+                            })
+                            .to_string();
+                            let resp = format!(
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                resp_body.len(),
+                                resp_body
+                            );
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        }
+                        "perm_error_400_invalid_grant" => {
+                            let resp_body = serde_json::json!({
+                                "error": "invalid_grant",
+                                "message": "Refresh token revoked"
+                            })
+                            .to_string();
+                            let resp = format!(
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                resp_body.len(),
+                                resp_body
+                            );
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        }
                         _ => {}
                     }
                 } else if req.contains("POST /oauth/destroy") {
@@ -262,4 +301,59 @@ async fn test_token_provider_server_side_revocation_on_signout() {
 
     let _ = store.clear();
     let _ = std::fs::remove_file(&path);
+}
+
+// --- External-review S7 regression tests: only a genuinely dead grant
+// (401, or 400 invalid_grant) may clear the stored session. Any other
+// 400/403 (e.g. produced by a CDN edge) is transient and must leave
+// the credentials intact.
+
+async fn expired_provider_for(behavior: &'static str) -> (FxaTokenProvider, Arc<SecretStore>, std::path::PathBuf, MockAuthServer) {
+    let server = MockAuthServer::spawn(behavior).await;
+    let auth_url = format!("http://127.0.0.1:{}", server.port);
+    let http_client = reqwest::Client::new();
+    let fxa_client = Arc::new(FxaClient::with_client_and_server(http_client, &auth_url));
+    let (store, path) = create_temp_secret_store();
+    let expired = OAuthTokens {
+        access_token: "expired_access".to_string(),
+        refresh_token: Some("some_refresh".to_string()),
+        expires_at_epoch_seconds: 100,
+    };
+    let provider = FxaTokenProvider::with_tokens(fxa_client, store.clone(), Some(expired.clone()));
+    // Persist a session file so "was it cleared?" is observable.
+    provider.set_tokens(expired, "user@example.com").await.unwrap();
+    assert!(path.exists());
+    (provider, store, path, server)
+}
+
+#[tokio::test]
+async fn test_refresh_403_does_not_clear_credentials() {
+    let (provider, store, path, _server) = expired_provider_for("forbidden_403").await;
+    let err = provider.get_access_token().await.unwrap_err();
+    assert!(err.contains("TransientAuthError"), "403 must be transient, got: {}", err);
+    assert!(provider.current_tokens().await.is_some(), "tokens must survive a 403");
+    assert!(path.exists(), "stored session must survive a 403");
+    let _ = std::fs::remove_file(&path);
+    drop(store);
+}
+
+#[tokio::test]
+async fn test_refresh_400_without_invalid_grant_does_not_clear_credentials() {
+    let (provider, store, path, _server) = expired_provider_for("bad_request_400_other").await;
+    let err = provider.get_access_token().await.unwrap_err();
+    assert!(err.contains("TransientAuthError"), "non-grant 400 must be transient, got: {}", err);
+    assert!(provider.current_tokens().await.is_some(), "tokens must survive a non-grant 400");
+    assert!(path.exists(), "stored session must survive a non-grant 400");
+    let _ = std::fs::remove_file(&path);
+    drop(store);
+}
+
+#[tokio::test]
+async fn test_refresh_400_invalid_grant_clears_credentials() {
+    let (provider, store, path, _server) = expired_provider_for("perm_error_400_invalid_grant").await;
+    let err = provider.get_access_token().await.unwrap_err();
+    assert!(err.contains("PermanentAuthError"), "invalid_grant must be permanent, got: {}", err);
+    assert!(provider.current_tokens().await.is_none(), "tokens must be cleared on invalid_grant");
+    assert!(!path.exists(), "stored session must be cleared on invalid_grant");
+    drop(store);
 }
