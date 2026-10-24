@@ -1,4 +1,4 @@
-use crate::guardian::client::{GuardianClient, GUARDIAN_ENDPOINT_DEFAULT};
+use crate::guardian::client::GuardianClient;
 use crate::servers::model::ProxyCandidate;
 use crate::service::vpn_service::{ConnectionMode, ConnectionState, ServiceError};
 use crate::service::watchdog::TokenRenewalWorker;
@@ -75,6 +75,16 @@ pub enum ServiceCommand {
     /// the round-3 review).
     ReconnectCompleted {
         session: Box<SessionContext>,
+    },
+    /// Sent by the reconnect task when all attempts are exhausted in
+    /// Full mode: the carried kill switch is handed to the actor for
+    /// retention instead of being dropped. Dropping it (the old
+    /// behavior) removed the filters and left the machine fail-open on
+    /// direct internet in the Failed state (external review, H3). The
+    /// actor releases it on Disconnect/Cancel or disarms it when a new
+    /// session's own kill switch supersedes it.
+    RetainKillSwitch {
+        guard: Box<crate::vpn::killswitch::KillSwitchGuard>,
     },
 }
 
@@ -162,6 +172,10 @@ pub struct StateMachineActor {
     reconnecting_cancel: Option<CancellationToken>,
     reconnecting_handle: Option<JoinHandle<()>>,
     custom_roots: Option<rustls::RootCertStore>,
+    /// Kill switch retained after a Full-mode reconnect exhaustion
+    /// (see ServiceCommand::RetainKillSwitch): traffic stays blocked
+    /// in the Failed state until the user disconnects or reconnects.
+    retained_killswitch: Option<crate::vpn::killswitch::KillSwitchGuard>,
 }
 
 impl StateMachineActor {
@@ -197,6 +211,7 @@ impl StateMachineActor {
             reconnecting_cancel: None,
             reconnecting_handle: None,
             custom_roots,
+            retained_killswitch: None,
         };
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -297,6 +312,7 @@ impl StateMachineActor {
                         sup_tx,
                         forwarder_handle,
                         roots_clone,
+                        None,
                     )
                     .await
                 });
@@ -361,9 +377,25 @@ impl StateMachineActor {
                 let mode = session.mode;
                 let target = session.candidate.clone();
                 self.active_session = Some(*session);
+                // The new session's own kill switch supersedes any
+                // retained one; disarm (do NOT clean) so the retained
+                // guard's teardown cannot remove the new protection.
+                if let Some(mut retained) = self.retained_killswitch.take() {
+                    retained.disarm();
+                }
                 let _ = self
                     .state_tx
                     .send(ConnectionState::Connected { mode, target });
+            }
+
+            ServiceCommand::RetainKillSwitch { guard } => {
+                if let Some(mut old) = self.retained_killswitch.take() {
+                    old.disarm();
+                }
+                self.retained_killswitch = Some(*guard);
+                tracing::warn!(
+                    "Kill switch retained after reconnect exhaustion: traffic stays blocked until disconnect or a successful reconnect"
+                );
             }
 
             ServiceCommand::GetMetrics { reply } => {
@@ -390,6 +422,9 @@ impl StateMachineActor {
                 let mode = session.mode;
                 let target = session.candidate.clone();
                 self.active_session = Some(session);
+                if let Some(mut retained) = self.retained_killswitch.take() {
+                    retained.disarm();
+                }
                 let _ = self
                     .state_tx
                     .send(ConnectionState::Connected { mode, target });
@@ -445,6 +480,7 @@ impl StateMachineActor {
         supervision_tx: mpsc::Sender<SupervisionEvent>,
         forwarder_handle: JoinHandle<()>,
         custom_roots: Option<rustls::RootCertStore>,
+        inherited_proxy_guard: Option<SystemProxyGuard>,
     ) -> Result<SessionContext, ServiceError> {
         let mut tracker = TaskTracker::new();
         // Track the caller's supervision-event forwarder so it is aborted
@@ -569,6 +605,8 @@ impl StateMachineActor {
         let mut local_proxy = None;
         let mut system_proxy_guard = None;
         let mut killswitch_guard = None;
+        // Consumed by the ProxyOnly branch on reconnects (see below).
+        let mut inherited_proxy_guard = inherited_proxy_guard;
 
         match mode {
             ConnectionMode::Full => {
@@ -600,9 +638,14 @@ impl StateMachineActor {
                 .map_err(|e| ServiceError::Vpn(format!("Route error: {:?}", e)))?;
                 route_guard = Some(rg);
 
-                // Native kill switch (WFP on Windows, iptables on Linux) (R-8)
-                let mut ksg = crate::vpn::killswitch::KillSwitchGuard::new(
+                // Native kill switch (WFP on Windows, iptables on Linux) (R-8).
+                // Journaled via the shared recovery journal: the iptables
+                // chains persist across a crash/SIGKILL (unlike the WFP
+                // dynamic session), so the next startup's recover_if_dirty
+                // needs this record to remove them (external review, H2b).
+                let mut ksg = crate::vpn::killswitch::KillSwitchGuard::new_with_journal(
                     crate::vpn::killswitch::platform_firewall_backend(),
+                    Some(crate::vpn::recovery_journal::RecoveryJournal::shared_default()),
                 );
                 let policy = crate::vpn::killswitch::KillSwitchPolicy {
                     kill_switch_enabled: true,
@@ -622,18 +665,55 @@ impl StateMachineActor {
                 killswitch_guard = Some(ksg);
 
                 let pump = PacketPump::new();
-                let pump_handle = pump.start(device.clone(), h2_session.clone());
+                let pump_handle = pump.start(
+                    device.clone(),
+                    h2_session.clone(),
+                    Some(supervision_tx.clone()),
+                );
                 tracker.track(pump_handle);
                 packet_pump = Some(pump);
             }
             ConnectionMode::ProxyOnly => {
                 let proxy = LocalProxyServer::new();
                 let proxy_upstream = h2_session.clone();
-                proxy.start(DEFAULT_LOCAL_PROXY_PORT, proxy_upstream);
+                // Bind errors are fatal now (H1): enabling the system
+                // proxy against a port nobody listens on would report
+                // Connected while traffic dies (or reaches a stranger's
+                // listener). start() binds before spawning, so this `?`
+                // fires before any system state changes.
+                proxy
+                    .start(DEFAULT_LOCAL_PROXY_PORT, proxy_upstream)
+                    .await
+                    .map_err(|e| {
+                        ServiceError::Vpn(format!(
+                            "Local proxy failed to bind 127.0.0.1:{}: {}",
+                            DEFAULT_LOCAL_PROXY_PORT, e
+                        ))
+                    })?;
                 local_proxy = Some(proxy);
 
-                let spg = SystemProxyGuard::enable(DEFAULT_LOCAL_PROXY_PORT)
-                    .map_err(|e| ServiceError::Vpn(format!("System proxy error: {:?}", e)))?;
+                // On a reconnect, the previous session's system-proxy
+                // guard is inherited: it still holds the ORIGINAL
+                // pre-VPN settings as its backup and the OS proxy never
+                // stopped pointing at the local listener, so there is
+                // no direct-traffic window and no backup-of-our-own-
+                // settings corruption (external review, M4). A fresh
+                // connect enables a new guard instead.
+                let spg = match inherited_proxy_guard.take() {
+                    Some(g) => g,
+                    None => match SystemProxyGuard::enable(DEFAULT_LOCAL_PROXY_PORT) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            if let Some(p) = local_proxy.take() {
+                                p.stop().await;
+                            }
+                            return Err(ServiceError::Vpn(format!(
+                                "System proxy error: {:?}",
+                                e
+                            )));
+                        }
+                    },
+                };
                 system_proxy_guard = Some(spg);
             }
         }
@@ -709,7 +789,7 @@ impl StateMachineActor {
         let renewal_worker = TokenRenewalWorker::new();
         let renewal_handle = renewal_worker.start(
             guardian.clone(),
-            GUARDIAN_ENDPOINT_DEFAULT.to_string(),
+            guardian.endpoint().to_string(),
             access_token.clone(),
             h2_session.clone(),
             proxy_pass.expires_at_epoch_seconds,
@@ -733,6 +813,12 @@ impl StateMachineActor {
     }
 
     async fn perform_disconnect(&mut self) {
+        // A retained kill switch (Failed state after reconnect
+        // exhaustion) comes down only here: an explicit disconnect or
+        // cancel is the user accepting direct traffic again.
+        if let Some(mut retained) = self.retained_killswitch.take() {
+            retained.clean();
+        }
         if let Some(mut session) = self.active_session.take() {
             session.cancel_token.cancel();
 
@@ -787,6 +873,11 @@ impl StateMachineActor {
             old_session.h2_session.shutdown().await;
             old_session.tracker.abort_and_join_all().await;
             let carried_killswitch = old_session.killswitch_guard.take();
+            // ProxyOnly: the system proxy guard is carried too, so the
+            // OS proxy keeps pointing at the (restarting) local proxy
+            // for the whole reconnect window instead of being restored
+            // to direct traffic the moment the old session drops (M4).
+            let carried_proxy_guard = old_session.system_proxy_guard.take();
             drop(old_session.route_guard.take());
 
             let cancel_token = CancellationToken::new();
@@ -798,6 +889,7 @@ impl StateMachineActor {
 
             let reconnect_handle = tokio::spawn(async move {
                 let mut carried_killswitch = carried_killswitch;
+                let mut carried_proxy_guard = carried_proxy_guard;
 
                 for attempt in 1..=5 {
                     if cancel_clone.is_cancelled() {
@@ -836,16 +928,21 @@ impl StateMachineActor {
                         sup_tx,
                         forwarder_handle,
                         roots_clone.clone(),
+                        carried_proxy_guard.take(),
                     )
                     .await
                     {
                         Ok(new_session) => {
                             // The new attempt installed its own kill switch
-                            // (inside perform_connect_task). Only now is it
-                            // safe to release the carried-forward one from
-                            // the dead session; dropping it runs its Drop
-                            // impl, which removes its WFP filters.
-                            drop(carried_killswitch.take());
+                            // (inside perform_connect_task). The carried
+                            // guard is DISARMED, not cleaned: both guards
+                            // manage the same backend state, and a clean()
+                            // here would tear down the protection the new
+                            // session just installed (chain-global on
+                            // Linux, id-scoped on Windows).
+                            if let Some(mut carried) = carried_killswitch.take() {
+                                carried.disarm();
+                            }
 
                             // Hand the fully-built session back to the actor
                             // directly. Sending `Connect` here (the previous
@@ -867,16 +964,37 @@ impl StateMachineActor {
                     }
                 }
 
-                // All attempts exhausted: no session was ever produced to
-                // take ownership of the carried kill switch, so clean it up
-                // here. This also runs automatically via Drop if the task
-                // is aborted mid-loop (e.g. user hits Disconnect/Cancel
-                // while reconnecting).
-                drop(carried_killswitch.take());
+                if cancel_clone.is_cancelled() {
+                    // User cancelled mid-reconnect: dropping the guards
+                    // here restores direct traffic, which is what a
+                    // cancel means. (Drop also covers task aborts.)
+                    return;
+                }
 
-                let _ = state_tx.send(ConnectionState::Failed(
-                    "Upstream connection dropped; maximum reconnection attempts reached.".into(),
-                ));
+                // All attempts exhausted. Full mode: do NOT drop the
+                // carried kill switch — that removed the filters and
+                // left the machine fail-open in the Failed state (H3).
+                // Hand it to the actor for retention; it comes down on
+                // an explicit Disconnect/Cancel, or is disarmed when a
+                // new session's kill switch supersedes it. ProxyOnly:
+                // the carried proxy guard drops here, restoring the
+                // original system proxy — the session is over, so
+                // pointing the OS at a dead local listener would be
+                // the worse failure.
+                if let Some(carried) = carried_killswitch.take() {
+                    let _ = cmd_tx
+                        .send(ServiceCommand::RetainKillSwitch {
+                            guard: Box::new(carried),
+                        })
+                        .await;
+                    let _ = state_tx.send(ConnectionState::Failed(
+                        "Upstream connection dropped; maximum reconnection attempts reached. The kill switch stays active: traffic remains blocked until you disconnect or reconnect.".into(),
+                    ));
+                } else {
+                    let _ = state_tx.send(ConnectionState::Failed(
+                        "Upstream connection dropped; maximum reconnection attempts reached.".into(),
+                    ));
+                }
             });
 
             self.reconnecting_cancel = Some(cancel_token);
