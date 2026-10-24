@@ -180,6 +180,29 @@ class AppUpdateController(private val appContext: Context) {
             part.delete()
             throw error
         }
+        // Verify the download against the SHA-256 the GitHub API
+        // reported for this asset before it is offered to the installer
+        // (external review, A6). Android's package manager would still
+        // enforce the signing certificate afterwards; the checksum is
+        // what catches a corrupted or substituted download first.
+        val expected = info.sha256
+        if (expected != null) {
+            val actual = java.security.MessageDigest.getInstance("SHA-256").let { digest ->
+                part.inputStream().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        digest.update(buffer, 0, read)
+                    }
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            }
+            if (actual != expected) {
+                part.delete()
+                error("Downloaded APK failed checksum verification (expected $expected, got $actual)")
+            }
+        }
         val target = File(dir, info.assetName)
         if (target.exists()) target.delete()
         check(part.renameTo(target)) { "Could not finalize the downloaded APK" }
