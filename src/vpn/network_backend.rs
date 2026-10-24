@@ -115,6 +115,7 @@ fn netsh_route(
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // Windows netsh helper; stub on other platforms
 fn netsh_route(
     _action: &str,
     _dest: Ipv4Addr,
