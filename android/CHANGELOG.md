@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.19 (versionCode 56) — fix-wave correction, round 3
+
+- No Android code changes. The v1.0.18 tag's Windows build failed
+  clippy on `clippy::empty-line-after-outer-attr` in
+  tests/wfp_killswitch_test.rs: a blank line after the
+  `#[ignore = ...]` attribute of three Windows-only tests. The lint
+  is invisible on Linux CI because the whole test is cfg'd out
+  there. The blank lines are removed. The v1.0.18 release was
+  withdrawn and is superseded by this one.
+
 ## 1.0.18 (versionCode 55) — fix-wave correction, round 2
 
 - No Android code changes. This bump keeps the combined release
