@@ -66,6 +66,7 @@ impl PacketPump {
         &self,
         device: Arc<dyn TunDeviceOps>,
         upstream: Arc<H2UpstreamSession>,
+        failure_tx: Option<mpsc::Sender<crate::service::state_machine::SupervisionEvent>>,
     ) -> JoinHandle<()> {
         let running = self.running.clone();
         running.store(true, Ordering::SeqCst);
@@ -133,9 +134,51 @@ impl PacketPump {
                 }
             });
 
-            let _ = tokio::join!(writer_handle, reader_handle, dispatcher_handle);
-            tracing::info!("Packet pump fully terminated");
+            // The pump's tasks only finish early when something broke:
+            // a TUN receive error breaks the reader loop, a panic kills
+            // whichever task hit it. Previously the join results were
+            // discarded wholesale, so a dead dispatcher left the session
+            // reporting Connected while inbound traffic blackholed
+            // (external review, H6). Watch for the FIRST task to finish;
+            // if the pump was never told to stop, report the failure to
+            // the state machine as a dropped connection so supervision
+            // reconnects. Intentional stops flip `running` first, so
+            // they never trigger this.
+            let running_check = running.clone();
+            tokio::select! {
+                r = writer_handle => Self::report_if_unexpected("writer", r, &running_check, &failure_tx),
+                r = reader_handle => Self::report_if_unexpected("reader", r, &running_check, &failure_tx),
+                r = dispatcher_handle => Self::report_if_unexpected("dispatcher", r, &running_check, &failure_tx),
+            }
+            tracing::info!("Packet pump terminated");
         })
+    }
+
+    fn report_if_unexpected(
+        task: &str,
+        result: Result<(), tokio::task::JoinError>,
+        running: &Arc<AtomicBool>,
+        failure_tx: &Option<mpsc::Sender<crate::service::state_machine::SupervisionEvent>>,
+    ) {
+        if !running.load(Ordering::SeqCst) {
+            return; // intentional stop: tasks winding down is expected
+        }
+        match result {
+            Ok(()) => {
+                tracing::error!(
+                    "Packet pump {} task exited while the pump was running",
+                    task
+                );
+            }
+            Err(e) => {
+                tracing::error!("Packet pump {} task failed: {:?}", task, e);
+            }
+        }
+        if let Some(tx) = failure_tx {
+            let _ = tx.try_send(
+                crate::service::state_machine::SupervisionEvent::ConnectionDropped,
+            );
+        }
     }
 
     pub fn stop(&self) {
