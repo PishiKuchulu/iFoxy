@@ -1,13 +1,26 @@
 # Changelog
 
+## 1.0.17 (versionCode 54) — fix-wave correction
+
+- **Material3 stays on 1.4.0-alpha10.** The 1.0.16 tag pinned
+  Material3 to stable 1.3.1, which does not ship the expressive API:
+  the app theme uses `MaterialExpressiveTheme` and `MotionScheme`,
+  which are internal/unresolved in 1.3.1, so the Android build of the
+  v1.0.16 tag failed to compile (`:app:compileDebugKotlin`). The pin
+  reverts to the alpha line the theme was built against; moving to a
+  stable Material3 has to wait until a stable release ships the
+  expressive API. The broken v1.0.16 release was withdrawn; 1.0.17
+  supersedes it with no other changes.
+
 ## 1.0.16 (versionCode 53) — external-review fix wave
 
 Fixes from a full external code review of the 1.0.15 tree (each finding
 re-verified against the source first):
 
 - **Netty 4.1.115 → 4.1.119** (current 4.1.x security line);
-  security-crypto 1.1.0-alpha06 → alpha07; Material3 1.4.0-alpha10 →
-  stable 1.3.1 (A1, A2).
+  security-crypto 1.1.0-alpha06 → alpha07 (A1, A2). Material3 was
+  briefly pinned to stable 1.3.1 in this wave and reverted in 1.0.17 —
+  see the entry above.
 - **Debug logs no longer reach logcat in release builds**: AppLogger.d
   is gated on BuildConfig.DEBUG and ProGuard strips Log.v/Log.d calls;
   the debug lines carry connection targets (A4).
