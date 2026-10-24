@@ -15,6 +15,8 @@ data class GhAsset(
     val name: String,
     @SerialName("browser_download_url") val downloadUrl: String,
     val size: Long = 0,
+    /** "sha256:<hex>" as reported by the GitHub API for release assets. */
+    val digest: String? = null,
 )
 
 @Serializable
@@ -32,6 +34,8 @@ data class UpdateInfo(
     val assetName: String,
     val downloadUrl: String,
     val sizeBytes: Long,
+    /** Expected SHA-256 of the asset (lowercase hex), when the API reports one. */
+    val sha256: String? = null,
 )
 
 /**
@@ -79,9 +83,11 @@ object AppUpdateChecker {
     /**
      * Pure selection logic (unit-tested): among the strict `vX.Y.Z`
      * releases newer than [currentVersion] (drafts and prereleases
-     * excluded), pick the highest version that carries an Android APK —
-     * preferring the canonical `iFoxy-v<version>.apk` asset name. Old
-     * Windows-only tags have no APK and are skipped.
+     * excluded), pick the highest version that carries the canonical
+     * `iFoxy-v<version>.apk` asset. An arbitrary `.apk` asset of any
+     * other name no longer counts (external review, A6): accepting one
+     * would let any APK attached to a release be offered as an update.
+     * Old Windows-only tags have no such asset and are skipped.
      */
     fun selectUpdate(releases: List<GhRelease>, currentVersion: String): UpdateInfo? =
         releases.asSequence()
@@ -91,8 +97,19 @@ object AppUpdateChecker {
             .mapNotNull { release ->
                 val version = release.tagName.removePrefix("v")
                 val asset = release.assets.firstOrNull { it.name == "iFoxy-v$version.apk" }
-                    ?: release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-                asset?.let { UpdateInfo(version, release.tagName, it.name, it.downloadUrl, it.size) }
+                asset?.let {
+                    UpdateInfo(
+                        version,
+                        release.tagName,
+                        it.name,
+                        it.downloadUrl,
+                        it.size,
+                        sha256 = it.digest
+                            ?.removePrefix("sha256:")
+                            ?.lowercase()
+                            ?.takeIf { d -> d.length == 64 && d.all { c -> c.isDigit() || c in 'a'..'f' } },
+                    )
+                }
             }
             .firstOrNull()
 }
