@@ -246,7 +246,10 @@ async fn test_50_connect_disconnect_cycles_zero_task_leak_and_port_released() {
         let upstream = Arc::new(H2UpstreamSession::new_dummy("test_token"));
         let proxy = LocalProxyServer::new();
 
-        proxy.start(test_port, upstream.clone());
+        proxy
+            .start(test_port, upstream.clone())
+            .await
+            .expect("proxy bind must succeed");
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Open a client connection and leave the SOCKS5 handshake half done,
@@ -313,6 +316,7 @@ async fn test_50_connect_disconnect_cycles_zero_task_leak_and_port_released() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // the port lock deliberately serializes this test
 async fn test_end_to_end_real_reconnect_loop_with_fake_upstream() {
     let _proxy_port_guard = PROXY_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use bytes::Bytes;
@@ -521,6 +525,7 @@ async fn test_end_to_end_real_reconnect_loop_with_fake_upstream() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // the port lock deliberately serializes this test
 async fn test_cancel_during_real_reconnect_loop_preempts() {
     let _proxy_port_guard = PROXY_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use bytes::Bytes;
