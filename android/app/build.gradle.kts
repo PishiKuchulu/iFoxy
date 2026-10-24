@@ -73,8 +73,8 @@ android {
         applicationId = "com.pishi.ifoxy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 52
-        versionName = "1.0.15"
+        versionCode = 53
+        versionName = "1.0.16"
 
         externalNativeBuild {
             ndkBuild {
@@ -156,7 +156,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3:1.4.0-alpha10")
+    implementation("androidx.compose.material3:material3:1.3.1")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.navigation:navigation-compose:2.8.5")
@@ -168,13 +168,13 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.security:security-crypto:1.1.0-alpha07")
 
-    implementation("io.netty:netty-handler:4.1.115.Final")
-    implementation("io.netty:netty-codec-http2:4.1.115.Final")
-    implementation("io.netty:netty-transport:4.1.115.Final")
+    implementation("io.netty:netty-handler:4.1.119.Final")
+    implementation("io.netty:netty-codec-http2:4.1.119.Final")
+    implementation("io.netty:netty-transport:4.1.119.Final")
 
-    implementation("io.netty:netty-handler-proxy:4.1.115.Final")
+    implementation("io.netty:netty-handler-proxy:4.1.119.Final")
 
     implementation("org.conscrypt:conscrypt-android:2.5.2")
 
