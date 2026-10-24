@@ -36,6 +36,7 @@ iFoxy is one project with native clients that share the same idea: sign in with 
 The desktop client has two ways to protect your traffic:
 
 - **Proxy Only.** The default mode. It starts a local proxy and points the system proxy at it (Windows registry / GNOME `gsettings`). No driver is needed.
+- ⚠️ **Proxy Only caveat.** Applications that ignore the system proxy settings bypass the tunnel entirely in this mode and expose your real IP address. Use Full System mode when you need every application covered.
 - **Full System.** Creates a virtual network adapter ([Wintun](https://www.wintun.net/) on Windows, a `/dev/net/tun` device on Linux) and captures IPv4 traffic at layer 3. Every TCP connection and DNS query on the machine goes through the tunnel. This mode needs administrator rights (root via pkexec on Linux), and a kill switch (WFP on Windows, iptables on Linux) blocks everything outside the tunnel while it is active.
 
 Everything runs inside a single binary. The interface is HTML, CSS and vanilla JavaScript rendered by Microsoft Edge WebView2 on Windows and WebKitGTK on Linux, with no heavy frontend framework.
@@ -44,7 +45,7 @@ Everything runs inside a single binary. The interface is HTML, CSS and vanilla J
 
 - 🧱 **Userspace TCP stack.** A full TCP state machine runs in user space: per-flow actors, reassembly queues, duplicate and overlapping segment trimming, fast retransmit, window tracking and FIN half-close.
 - 🌐 **HTTP/2 CONNECT transport.** Traffic is multiplexed over encrypted HTTP/2 streams, which fits well through restrictive networks.
-- 🔐 **Secrets stay local and encrypted.** Credentials are protected with Windows DPAPI, using user-specific entropy. Plaintext is never written to disk, and in-memory tokens are zeroized on drop.
+- 🔐 **Secrets stay local and encrypted.** Credentials are protected with Windows DPAPI with application-specific entropy (on Linux, with ChaCha20-Poly1305 and a per-user key file). Plaintext is never written to disk, and in-memory tokens are zeroized on drop.
 - 🛡️ **Hardened control API.** The local API uses a per-session bearer token, strict Host header checks, cross-origin blocking, payload limits, timeouts and a Content-Security-Policy.
 - 🧾 **Crash recovery.** A journal in `%APPDATA%\iFoxy\` restores routes and proxy settings after an unexpected exit.
 - 🧹 **Redacting logs.** A rolling log file automatically redacts tokens, passwords and session secrets.
@@ -58,7 +59,7 @@ Tagged versions are published on the [**Releases**](https://github.com/PishiKuch
 - **Linux:** `ifoxy-linux-x86_64.tar.gz` (the `ifoxy_app` binary plus `install-linux.sh`), with an `ifoxy-linux-x86_64.tar.gz.sha256` file next to it. Runtime needs: WebKitGTK 4.1, iproute2 and iptables.
 - **Android:** `iFoxy-v<version>.apk` (Android 8.0 or newer), signed with the project release key. Signing certificate SHA-256: `f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee`.
 
-The latest release is [**v1.0.10**](https://github.com/PishiKuchulu/iFoxy/releases/tag/v1.0.10).
+The latest release is on the [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases/latest) page.
 
 For the newest Windows build between releases, go to the [**Actions**](https://github.com/PishiKuchulu/iFoxy/actions/workflows/build-windows.yml) tab, open the latest successful run of *Build Windows EXE* and download the `ifoxy_app-windows-x64` artifact.
 
@@ -131,7 +132,7 @@ Please do not open public issues for security problems. Report them privately to
 - Split tunneling, in-tunnel DNS over HTTPS and bootstrap resolver choices
 - Upstream proxy chaining, TLS fragmentation, custom MTU, exit-location verification
 - Guardian quota display, in-app logs, day / night / follow-system themes
-- Hardened release line (current: **v1.0.10**) — see [`android/CHANGELOG.md`](android/CHANGELOG.md)
+- Hardened release line (current: see the latest release) — see [`android/CHANGELOG.md`](android/CHANGELOG.md)
 
 Download the signed APK from the [Releases](https://github.com/PishiKuchulu/iFoxy/releases) page as described above. Features, build instructions and limitations are in [`android/README.md`](android/README.md).
 
@@ -154,6 +155,7 @@ Download the signed APK from the [Releases](https://github.com/PishiKuchulu/iFox
 کلاینت دسکتاپ دو روش برای محافظت از ترافیک دارد:
 
 - **فقط پروکسی (Proxy Only).** حالت پیش‌فرض. یک پروکسی محلی راه می‌اندازد و پروکسی سیستم را به آن وصل می‌کند (در ویندوز از طریق رجیستری و در لینوکس از طریق تنظیمات GNOME). به درایور اضافی نیاز ندارد.
+- ⚠️ **هشدار حالت فقط پروکسی.** برنامه‌هایی که تنظیمات پروکسی سیستم را نادیده می‌گیرند در این حالت کاملاً از تونل عبور نمی‌کنند و آی‌پی واقعی شما آشکار می‌شود. برای پوشش همه برنامه‌ها از حالت تمام‌سیستمی استفاده کنید.
 - **تونل کامل (Full System).** یک آداپتور شبکه مجازی می‌سازد (در ویندوز [Wintun](https://www.wintun.net/) و در لینوکس یک دیوایس ‎/dev/net/tun‎) و ترافیک IPv4 را در لایه ۳ می‌گیرد. در این حالت تمام اتصال‌های TCP و درخواست‌های DNS سیستم از تونل عبور می‌کنند و یک Kill Switch (در ویندوز WFP و در لینوکس iptables) جلوی نشت ترافیک بیرون از تونل را می‌گیرد. این حالت به دسترسی Administrator در ویندوز و root (از طریق pkexec) در لینوکس نیاز دارد.
 
 همه‌چیز داخل یک فایل اجرایی واحد است. رابط کاربری با HTML، CSS و JavaScript ساده نوشته شده و در ویندوز توسط WebView2 مایکروسافت (همان موتور Edge) و در لینوکس توسط WebKitGTK نمایش داده می‌شود. فریم‌ورک سنگین فرانت‌اند ندارد.
@@ -170,7 +172,7 @@ Download the signed APK from the [Releases](https://github.com/PishiKuchulu/iFox
 
 ### دانلود
 
-نسخه‌های تگ‌خورده در صفحه [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) منتشر می‌شوند. از نسخه v1.0.8 به بعد، هر ریلیز شامل **هر دو** کلاینت است:
+نسخه‌های تگ‌خورده در صفحه [**Releases**](https://github.com/PishiKuchulu/iFoxy/releases) منتشر می‌شوند. از نسخه v1.0.8 به بعد، هر ریلیز شامل **هر سه** کلاینت است:
 
 - **ویندوز:** فایل `ifoxy_app.exe` همراه با `ifoxy_app.exe.sha256` تا بتوانید صحت دانلود را بررسی کنید.
 - **لینوکس:** فایل `ifoxy-linux-x86_64.tar.gz` (شامل باینری `ifoxy_app` و اسکریپت `install-linux.sh`) همراه با `ifoxy-linux-x86_64.tar.gz.sha256`. پیش‌نیازهای اجرا: کتابخانه WebKitGTK 4.1 و بسته‌های iproute2 و iptables.
@@ -234,7 +236,7 @@ cargo test                 # اجرای تست‌ها
 - تونل‌بندی تقسیم‌شده (Split tunneling)، DNS داخل تونل با DoH و انتخاب‌های resolver راه‌انداز
 - زنجیره پروکسی بالادستی، قطعه‌بندی TLS، MTU سفارشی و بررسی موقعیت خروجی
 - نمایش سهمیه Guardian، لاگ داخل برنامه و تم‌های روز / شب / دنبال‌کردن سیستم
-- خط ریلیز سخت‌سازی‌شده (نسخه فعلی: **v1.0.10**) — جزئیات در [`android/CHANGELOG.md`](android/CHANGELOG.md)
+- خط ریلیز سخت‌سازی‌شده (نسخه فعلی: آخرین ریلیز را ببینید) — جزئیات در [`android/CHANGELOG.md`](android/CHANGELOG.md)
 
 دانلود APK امضاشده از صفحه [Releases](https://github.com/PishiKuchulu/iFoxy/releases) انجام می‌شود (بخش دانلود در بالا). ویژگی‌ها، روش ساخت و محدودیت‌ها در [`android/README.md`](android/README.md) آمده است.
 
