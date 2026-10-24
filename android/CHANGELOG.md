@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.16 (versionCode 53) — external-review fix wave
+
+Fixes from a full external code review of the 1.0.15 tree (each finding
+re-verified against the source first):
+
+- **Netty 4.1.115 → 4.1.119** (current 4.1.x security line);
+  security-crypto 1.1.0-alpha06 → alpha07; Material3 1.4.0-alpha10 →
+  stable 1.3.1 (A1, A2).
+- **Debug logs no longer reach logcat in release builds**: AppLogger.d
+  is gated on BuildConfig.DEBUG and ProGuard strips Log.v/Log.d calls;
+  the debug lines carry connection targets (A4).
+- **Upstream TLS trust no longer includes user-installed CAs**: the
+  merged trust store takes the platform anchors from the default trust
+  manager (which follows the app policy) instead of enumerating the
+  raw AndroidCAStore, plus the bundled GlobalSign roots (A5).
+- **In-app updater verifies downloads**: the asset's SHA-256 from the
+  GitHub API is checked before install, and only the canonical
+  `iFoxy-v<version>.apk` asset name is accepted — the any-`.apk`
+  fallback is gone (A6).
+- **hev tunnel session cap**: `max-session-count` 0 (unlimited) → 512,
+  in line with the local proxy caps (A7).
+- **Release workflow fails fast** with a clear error when the signing
+  secret is missing, instead of failing obscurely at the APK rename
+  step on an unsigned build (A8).
+- **Widget** has a distinct connected background (it previously shared
+  the disconnected one) (A9); `supportsRtl` is now true (A10 — full
+  Persian string resources remain a separate follow-up).
+- Ships together with the desktop 0.2.1 fix wave in one combined
+  release.
+
 ## 1.0.15 (versionCode 52) — Linux desktop release companion
 
 - No Android changes in this release. The version bump accompanies the
