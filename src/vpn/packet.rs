@@ -100,6 +100,13 @@ impl Ipv4Header {
         }
 
         let total_length = u16::from_be_bytes([buf[2], buf[3]]);
+        // A total_length smaller than the header itself is malformed;
+        // without this check the payload length computation below
+        // underflows (panic in debug, wrap + out-of-range slice panic
+        // in release) on a crafted packet (external review, H6).
+        if (total_length as usize) < (ihl as usize) {
+            return None;
+        }
         if buf.len() < (total_length as usize) {
             return None;
         }
