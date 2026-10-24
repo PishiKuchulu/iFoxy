@@ -11,6 +11,9 @@ fn env_path(var: &str) -> Option<PathBuf> {
     std::env::var(var).ok().filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+// Only the XDG (non-Windows) roots fall back to the home directory;
+// Windows derives its roots from APPDATA/LOCALAPPDATA directly.
+#[cfg(not(windows))]
 fn home_dir() -> PathBuf {
     env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
 }
