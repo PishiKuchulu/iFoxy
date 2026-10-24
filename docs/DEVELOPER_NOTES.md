@@ -32,7 +32,7 @@ Native Windows desktop client for iFoxy implemented in **Rust** with native WebV
 ## Project Structure
 
 ```
-ifoxy-windows/
+ifoxy/
 ├── src/
 │   ├── main.rs              # Native GUI entrypoint, mutex guard & event loop
 │   ├── security.rs          # Safe DLL search order & SHA-256 binary validation
