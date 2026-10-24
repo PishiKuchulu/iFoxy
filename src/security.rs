@@ -47,7 +47,15 @@ pub fn trusted_install_roots() -> Vec<PathBuf> {
 }
 
 pub fn is_secure_install_location(exe_dir: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|r| is_path_under(exe_dir, r))
+    // Canonicalize both sides first: the string-prefix comparison alone
+    // trusted the path as spelled, so a symlink/junction inside a
+    // trusted root (or `..` segments) could make a user-writable
+    // directory look installed under Program Files (external review,
+    // S5). Canonicalization resolves links and dot segments; fall back
+    // to the raw path when it fails (e.g. a root that does not exist).
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let exe = canon(exe_dir);
+    roots.iter().any(|r| is_path_under(&exe, &canon(r)))
 }
 
 /// The application runs elevated and loads DLLs from its own directory. If
@@ -78,7 +86,7 @@ pub fn check_install_location(exe_dir: &Path, allow_portable: bool) -> Result<()
                 exe_dir.display()
             );
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -340,10 +348,20 @@ pub fn acquire_single_instance(mutex_name: &str) -> Option<SingleInstanceGuard> 
 #[cfg(target_os = "linux")]
 pub fn acquire_single_instance(_mutex_name: &str) -> Option<SingleInstanceGuard> {
     use std::os::unix::io::AsRawFd;
-    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = PathBuf::from(dir).join("ifoxy.lock");
+    // XDG_RUNTIME_DIR is per-user (mode 0700). The old fallback put the
+    // lock in world-writable /tmp, where any local user could pre-create
+    // and hold the file to block startup (external review, S5); fall
+    // back to the user's own state dir instead.
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::paths::state_dir);
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("ifoxy.lock");
     let file = fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(path)
         .ok()?;
