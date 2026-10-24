@@ -106,6 +106,10 @@ where
             }
             let _ = tx_a.try_send(());
             b_write.write_all(&buf[..n]).await?;
+            // A completed write is activity too: a single write blocked
+            // against a stalled peer must not let the idle timer kill a
+            // live relay mid-transfer (external review, M3).
+            let _ = tx_a.try_send(());
         }
         Ok::<(), std::io::Error>(())
     };
@@ -121,6 +125,7 @@ where
             }
             let _ = tx_b.try_send(());
             a_write.write_all(&buf[..n]).await?;
+            let _ = tx_b.try_send(());
         }
         Ok::<(), std::io::Error>(())
     };
@@ -182,7 +187,18 @@ impl Default for LocalProxyServer {
 }
 
 impl LocalProxyServer {
-    pub fn start(&self, port: u16, upstream: Arc<H2UpstreamSession>) {
+    /// Bind the listener FIRST and only then spawn the accept loop, so
+    /// a bind failure (port already in use) is returned to the caller
+    /// instead of being logged inside a detached task while the caller
+    /// goes on to point the system proxy at a dead port and report
+    /// Connected (external review, H1).
+    pub async fn start(
+        &self,
+        port: u16,
+        upstream: Arc<H2UpstreamSession>,
+    ) -> std::io::Result<()> {
+        let listener = bind_listener(&format!("127.0.0.1:{}", port)).await?;
+
         let running = self.running.clone();
         let active_conns = self.active_connections.clone();
         let cancel_token = self.cancel_token.clone();
@@ -190,14 +206,6 @@ impl LocalProxyServer {
         running.store(true, Ordering::SeqCst);
 
         let handle = tokio::spawn(async move {
-            let listener = match bind_listener(&format!("127.0.0.1:{}", port)).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!("Failed to bind local proxy on port {}: {:?}", port, e);
-                    return;
-                }
-            };
-
             tracing::info!(
                 "Local SOCKS5 & HTTP CONNECT proxy active on 127.0.0.1:{}",
                 port
@@ -248,6 +256,7 @@ impl LocalProxyServer {
         if let Ok(mut lock) = self.accept_handle.lock() {
             *lock = Some(handle);
         }
+        Ok(())
     }
 
     pub async fn stop(&self) {
@@ -464,10 +473,10 @@ pub async fn handle_http_connect(
     let h2_stream_opt = tokio::time::timeout(PROXY_HANDSHAKE_TIMEOUT, async {
         let mut buf = Vec::with_capacity(1024);
         let mut temp = [0u8; 256];
-        let mut found_header_end = false;
+        let mut header_end: Option<usize> = None;
 
         // Read until \r\n\r\n (fragmentation support)
-        while !found_header_end {
+        while header_end.is_none() {
             if buf.len() > 8192 {
                 let _ = client
                     .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
@@ -482,10 +491,15 @@ pub async fn handle_http_connect(
                 return Ok(None);
             }
             buf.extend_from_slice(&temp[..n]);
-            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                found_header_end = true;
-            }
+            header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
         }
+        let header_end = header_end.unwrap_or(buf.len());
+        // Bytes that arrived in the same read as the header terminator
+        // (e.g. a pipelined TLS ClientHello) belong to the tunnel: they
+        // are forwarded upstream once the CONNECT succeeds instead of
+        // being silently dropped with the header buffer (external
+        // review, S2).
+        let leftover: Vec<u8> = buf.drain(header_end..).collect();
 
         let req_str = String::from_utf8_lossy(&buf);
         let first_line = req_str.lines().next().unwrap_or("");
@@ -517,7 +531,7 @@ pub async fn handle_http_connect(
                     client
                         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                         .await?;
-                    Ok(Some(h2_stream))
+                    Ok(Some((h2_stream, leftover)))
                 }
                 Err(e) => {
                     tracing::warn!("HTTP CONNECT failed for {}:{}: {:?}", host, port, e);
@@ -536,7 +550,10 @@ pub async fn handle_http_connect(
     })
     .await??;
 
-    if let Some(mut h2_stream) = h2_stream_opt {
+    if let Some((mut h2_stream, leftover)) = h2_stream_opt {
+        if !leftover.is_empty() {
+            h2_stream.write_all(&leftover).await?;
+        }
         copy_bidirectional_with_idle(client, &mut h2_stream, PROXY_IDLE_TIMEOUT).await?;
     }
 
