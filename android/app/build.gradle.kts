@@ -73,8 +73,8 @@ android {
         applicationId = "com.pishi.ifoxy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 57
-        versionName = "1.0.20"
+        versionCode = 58
+        versionName = "1.0.21"
 
         externalNativeBuild {
             ndkBuild {
@@ -170,11 +170,15 @@ dependencies {
 
     implementation("androidx.security:security-crypto:1.1.0-alpha07")
 
-    implementation("io.netty:netty-handler:4.1.119.Final")
-    implementation("io.netty:netty-codec-http2:4.1.119.Final")
-    implementation("io.netty:netty-transport:4.1.119.Final")
+    // 4.1.139.Final (Oct 2026): security release fixing codec-http2,
+    // codec-http and handler issues present in 4.1.119. Netty 4.1 goes
+    // End-of-Life 2027-07-01; a 4.2 migration is future work, tracked
+    // in CHANGELOG.md.
+    implementation("io.netty:netty-handler:4.1.139.Final")
+    implementation("io.netty:netty-codec-http2:4.1.139.Final")
+    implementation("io.netty:netty-transport:4.1.139.Final")
 
-    implementation("io.netty:netty-handler-proxy:4.1.119.Final")
+    implementation("io.netty:netty-handler-proxy:4.1.139.Final")
 
     implementation("org.conscrypt:conscrypt-android:2.5.2")
 
