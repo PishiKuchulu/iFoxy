@@ -30,9 +30,17 @@ iFoxy runs on Windows as a native client providing Layer 3 transit tunneling and
   - Strict Content-Security-Policy (CSP) headers block all third-party origins.
 
 ### 2.2 Process Privilege Separation & Single-Instance Handover (C3, M10, R-14)
-- **Privilege Separation:**
-  - The user interface operates in medium integrity.
-  - Administrative tasks (Wintun adapter installation, IP Helper routing, WFP firewall rules) require elevation.
+- **Privilege model (corrected 2026-10-25 — the previous "medium
+  integrity UI" line was stale):** there is NO privilege separation in
+  the current build. The unelevated launcher re-launches the process
+  elevated (`ShellExecuteW("runas")` on Windows, pkexec on Linux) and
+  exits; the elevated process then runs everything — WebView2 UI,
+  control server, VPN core, Wintun/routing/WFP. Administrative tasks
+  (Wintun adapter installation, IP Helper routing, WFP firewall rules)
+  therefore run in the same process as the UI. An unelevated-UI +
+  hardened privileged-service split is documented as blocked/future
+  work, not implemented (see §2.3 "Not done" and
+  docs/FIX_TRACKER.md).
 - **Mutex Handover Safety (R-14):**
   - Checking `is_admin()` occurs **before** attempting to acquire the single-instance mutex.
   - When unelevated, the process invokes `ShellExecuteW("runas")` and immediately terminates (`std::process::exit(0)`).

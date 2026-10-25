@@ -6,13 +6,31 @@ This document outlines the automated test suite and manual verification procedur
 
 ## 1. Automated Test Suite
 
-The test suite consists of **99 automated test cases across 27 test targets** in `tests/`. All tests compile cleanly on the Windows MSVC toolchain (`stable-x86_64-pc-windows-msvc`) and pass 100%.
+The test suite consists of **121 test functions across 31 test files**
+in `tests/` (attribute count, 2026-10-25). Counts by platform differ
+because some tests are platform-gated (Windows-only WFP/DNS tests,
+Linux-only backend tests) and 5 tests are `#[ignore]`d (admin/root
+required: 3 WFP, 1 Linux TUN, 1 destructive DNS).
 
 ### Running the Full Test Suite
 ```powershell
 cargo test
 ```
-**Observed Summary:** `99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.2s`.
+**Observed Summary (Linux, 2026-10-25, rustc 1.99.1, this tree):**
+`112 passed; 0 failed; 1 ignored` (the ignored test requires root for
+a real TUN device). Earlier versions of this document quoted 99 tests
+/ 27 targets and docs/FIX_TRACKER.md quoted 107 / 27 — both stale;
+do not quote those numbers as current.
+
+> Kill-switch wording note: the WFP tests below are filter-API
+> read-back (install real filters, read them back via
+> `FwpmFilterGetById0`) and are `#[ignore]`d admin-required tests on
+> Windows. Read-back proves the filters exist with the right
+> parameters; it does NOT prove end-to-end leak protection (real
+> traffic actually blocked when the tunnel drops). That is why
+> README.md says the kill switch is "not verified on a real Windows
+> machine" — the two statements describe different levels of testing,
+> and both are true.
 
 ### Verified Test Suites & Windows API Integration Tests
 

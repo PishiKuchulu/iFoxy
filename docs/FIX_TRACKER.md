@@ -1,5 +1,11 @@
 # FIX TRACKER
 
+> Status note (2026-10-25, second external-review wave): this tracker
+> is a HISTORICAL record through round 6. Its round-5 counts (107 tests
+> / 27 suites) are stale — the current tree has 121 test functions
+> across 31 files, and the current verified counts live in
+> docs/TESTING.md. Do not quote the round-5 numbers as current.
+
 > Round 6 note: the only code change after the verified round 5 is in `src/main.rs` (install-location warning dialog instead of a hard refusal). It was edited without a compiler.
  (verified status - Round 5)
 
