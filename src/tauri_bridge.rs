@@ -349,7 +349,12 @@ impl AppState {
 
                 match self
                     .vpn_service
-                    .start_connect(candidate, &access_token, mode)
+                    .start_connect(
+                        candidate,
+                        &access_token,
+                        mode,
+                        Some(self.token_provider.clone()),
+                    )
                     .await
                 {
                     Ok(_) => {

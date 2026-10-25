@@ -134,12 +134,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 4. Crash recovery: replay recovery journal if dirty before any network changes (R-9)
+    // Fail CLOSED on replay error (external review, P2): a journal that
+    // exists but cannot be read/parsed means the previous session's
+    // routes/proxy/DNS state is unknown, and silently continuing into a
+    // new connect could leave the machine in a half-restored network
+    // state or run without the kill switch the user expects. Refuse to
+    // start, loudly, instead of logging and carrying on. Recovery is a
+    // manual step: delete the journal file (the app then starts with no
+    // restore) and check the previous session's routes/proxy by hand.
     let native_backend = ifoxy_windows::vpn::network_backend::platform_backend();
+    let journal_path = ifoxy_windows::vpn::recovery_journal::RecoveryJournal::default_path();
     if let Err(e) = ifoxy_windows::vpn::recovery_journal::RecoveryJournal::recover_if_dirty(
-        &ifoxy_windows::vpn::recovery_journal::RecoveryJournal::default_path(),
+        &journal_path,
         &*native_backend,
     ) {
-        tracing::error!("Recovery journal replay error on startup: {:?}", e);
+        let msg = format!(
+            "Fatal recovery error: the crash-recovery journal at {:?} could not be replayed ({:?}). \
+             iFoxy refuses to start rather than run with unknown leftover network state. \
+             To recover, delete that journal file and check the previous session's routes and proxy settings by hand, then relaunch.",
+            journal_path, e
+        );
+        tracing::error!("{}", msg);
+        show_fatal_error(&msg);
+        return Err(format!("recovery journal replay failed: {:?}", e).into());
     }
 
     // 5. Initialize background Tokio runtime for async VPN core & UI API server
