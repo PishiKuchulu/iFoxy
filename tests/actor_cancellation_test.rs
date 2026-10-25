@@ -49,7 +49,7 @@ async fn test_cancel_preempts_stalled_connecting_within_1_second() {
     let connect_handle = tokio::spawn(async move {
         // Will attempt connect and block
         let _ = service_clone
-            .start_connect(candidate, "dummy_token", ConnectionMode::ProxyOnly)
+            .start_connect(candidate, "dummy_token", ConnectionMode::ProxyOnly, None)
             .await;
     });
 
