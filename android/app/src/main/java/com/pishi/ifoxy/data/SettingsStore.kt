@@ -9,7 +9,8 @@ class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("ifoxy_settings", Context.MODE_PRIVATE)
 
-    // STB-FX-07: same corruption recovery as TokenStore.
+    // STB-FX-07: same corruption recovery as TokenStore (fail-closed:
+    // session-only in-memory store, never plaintext on disk).
     private val credentialsPrefs by lazy {
         createEncryptedPrefsWithRecovery(appContext, "ifoxy_settings_credentials")
     }

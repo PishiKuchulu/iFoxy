@@ -9,6 +9,8 @@ class TokenStore(context: Context) {
 
     // STB-FX-07: opening the encrypted store must never crash startup;
     // a corrupted store is reset (one re-login) instead of crash-looping.
+    // Persistent failure falls back to a session-only in-memory store —
+    // never to plaintext on disk (see EncryptedPrefs.kt).
     private val prefs = createEncryptedPrefsWithRecovery(context, "ifoxy_tokens")
 
     fun saveAuth(auth: RuntimeAuth) {

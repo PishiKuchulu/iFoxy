@@ -11,6 +11,7 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
@@ -145,13 +146,21 @@ private class ProtectingSocketFactory : SocketFactory() {
         if (protector != null) {
             val protectedOk = runCatching { protector.invoke(socket) }.getOrDefault(false)
             if (!protectedOk) {
-                AppLogger.w(
-                    TAG,
-                    "VpnService.protect() refused a control-plane socket; this request would be routed " +
-                        "back into the tunnel instead of out to the network",
+                // Fail CLOSED (external review, P2): handing the
+                // unprotected socket back would route this control-plane
+                // request through the tunnel it is supposed to bypass.
+                // Close it and fail the request so OkHttp surfaces a
+                // connect error instead of silently leaking the path.
+                runCatching { socket.close() }
+                throw SocketException(
+                    "VpnService.protect() refused a control-plane socket; " +
+                        "request aborted rather than routing through the tunnel",
                 )
             }
         }
+        // protector == null is the explicit no-protect path:
+        // proxyOnlyMode sets socketProtector = null by design (no TUN
+        // exists to leak into), so there is nothing to refuse here.
         return socket
     }
 
