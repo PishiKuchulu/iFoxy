@@ -49,7 +49,7 @@ Everything runs inside a single binary. The interface is HTML, CSS and vanilla J
 - 🛡️ **Hardened control API.** The local API uses a per-session bearer token, strict Host header checks, cross-origin blocking, payload limits, timeouts and a Content-Security-Policy.
 - 🧾 **Crash recovery.** A journal in `%APPDATA%\iFoxy\` restores routes and proxy settings after an unexpected exit.
 - 🧹 **Redacting logs.** A rolling log file automatically redacts tokens, passwords and session secrets.
-- 🚫 **Leak protection (in progress).** A WFP kill switch is implemented but not yet verified on a real Windows machine. See the status section below.
+- 🚫 **Leak protection (in progress).** A WFP kill switch is implemented; its filter API is covered by read-back tests (admin-required, opt-in), but end-to-end leak protection — real traffic actually blocked when the tunnel drops — is not yet verified on a real Windows machine. See the status section below.
 
 ### Download
 
@@ -114,7 +114,7 @@ For a deeper look, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Develope
 Be aware of these before you rely on iFoxy:
 
 - **Experimental.** This project is not production-ready. [`docs/FIX_TRACKER.md`](docs/FIX_TRACKER.md) lists the status of each item.
-- **Kill switch not verified.** The WFP kill switch has been written but not tested on Windows yet.
+- **Kill switch leak protection not verified end-to-end.** The WFP kill switch has been written and its filters are covered by API read-back tests, but blocking of real traffic on tunnel drop has not been tested on a real Windows machine yet.
 - **Only IPv4 TCP and DNS are tunneled.** Other UDP traffic such as VoIP, games and WebRTC is rejected. IPv6 is blocked on the physical interface to prevent leaks.
 - **Plain `http://` through the system proxy is refused.** Use HTTPS, or Full System mode.
 - **Unsigned binary.** Windows SmartScreen may warn you when you first run `ifoxy_app.exe`.
@@ -218,7 +218,7 @@ cargo test                 # اجرای تست‌ها
 قبل از استفاده، این موارد را در نظر داشته باشید:
 
 - **آزمایشی.** این پروژه آماده تولید نیست. وضعیت هر بخش در [`docs/FIX_TRACKER.md`](docs/FIX_TRACKER.md) آمده است.
-- **Kill Switch تأیید نشده.** کد Kill Switch نوشته شده، اما هنوز روی ویندوز تست نشده است.
+- **محافظت Kill Switch از نظر نشت ترافیک واقعی هنوز تأیید نشده.** کد Kill Switch نوشته شده و فیلترهای آن با تست‌های بازخوانی API پوشش داده شده‌اند، اما مسدود شدن ترافیک واقعی هنگام قطع تونل هنوز روی یک ماشین ویندوزی واقعی تست نشده است.
 - **فقط TCP و DNS با IPv4 از تونل عبور می‌کنند.** سایر ترافیک UDP مانند تماس صوتی، بازی و WebRTC رد می‌شود. IPv6 روی اینترفیس فیزیکی مسدود شده تا نشت نداشته باشد.
 - **`http://` ساده از پروکسی سیستم رد می‌شود.** از HTTPS یا حالت Full System استفاده کنید.
 - **فایل امضا نشده است.** ممکن است SmartScreen ویندوز در اولین اجرا هشدار بدهد.

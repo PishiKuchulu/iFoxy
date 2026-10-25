@@ -1,5 +1,65 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## 0.2.2 — Second external-review wave
+
+Fixes from a second full external code review of the v1.0.20 tree.
+Every finding was re-verified against the source before being acted
+on; the review was accurate on all code claims, with two framing
+corrections (the open-proxy risk was understated as silent — it is
+opt-in behind an explicit confirmation dialog; the Windows kill-switch
+statements describe different test levels, not a contradiction).
+
+- **Recovery replay failure is now fatal at startup.** A recovery
+  journal that exists but cannot be read/parsed used to be logged
+  and ignored while startup continued into a connectable UI, risking
+  a half-restored network state. Startup now refuses with a fatal
+  error naming the journal file and the manual recovery step
+  (delete the journal, check the previous session's routes/proxy by
+  hand). Regression tests pin both directions: corrupt journal is
+  an error, missing journal is a clean start.
+- **Token renewal uses the live credential provider.** The renewal
+  worker used to re-send the connect-time access token forever, so a
+  long session died at renewal once that token expired (and the
+  `TokenRefreshed` command only updated the H2 session, never the
+  worker). The actor now carries the `FxaTokenProvider` from the
+  Connect command through initial connects AND reconnect attempts,
+  so each renewal cycle fetches a fresh (possibly refreshed) token;
+  provider failures still warn and retry later. Callers without a
+  provider keep the old static-token behaviour.
+- **Docs reconciled.** `docs/SECURITY.md` §2.2 claimed a medium-
+  integrity UI — stale: the whole process runs elevated, and the
+  section now says so. `docs/TESTING.md` quoted 99 tests / 27
+  targets and `docs/FIX_TRACKER.md` 107 / 27; both were stale and
+  neither was dated or commit-pinned. Current: 121 test functions
+  across 31 files; Linux run on this tree: 112 passed, 0 failed,
+  1 ignored (root-only TUN test). README kill-switch lines now
+  distinguish filter-API read-back tests (exist, admin-required,
+  opt-in) from end-to-end leak verification (still not done on real
+  Windows).
+
+Known remaining (deliberately not fixed this wave, same reasons as
+before unless noted):
+- UI/service privilege split: a redesign (unelevated UI + hardened
+  privileged service with ACL'd IPC), not a patch. The current
+  elevated-everything model, the install-location confirmation and
+  the `IFOXY_ALLOW_PORTABLE=1` bypass are documented as-is.
+- TOTP-only FxA accounts cannot sign in; gateway-less (PPP) default
+  routes are undetected on Linux; local-proxy authentication is
+  still absent (non-loopback bind stays opt-in behind an explicit
+  risk confirmation, default loopback).
+- Android dependency locking/verification and a CI dependency scan:
+  need a Gradle run to generate the lock/verification files, which
+  this sandbox cannot do (Gradle daemon does not run here); direct
+  dependencies are all exact pins, so the exposure is transitive
+  drift only.
+- Android lint stays report-only (`abortOnError = false`, no lint
+  step in the release workflow): there is no lint baseline file, so
+  flipping the gate blind risks a red CI; the baseline must be
+  cleaned first.
+- ProGuard keep narrowing and minified-release on-device validation
+  remain pending on-device work; no record of a minified release
+  APK run exists yet.
+
 ## 0.2.1 — External-review fix wave
 
 Post-release corrections (shipped in the combined v1.0.20 release;
