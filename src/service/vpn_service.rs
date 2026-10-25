@@ -1,3 +1,4 @@
+use crate::auth::token_provider::TokenProvider;
 use crate::guardian::client::GuardianClient;
 use crate::servers::model::ProxyCandidate;
 use crate::service::state_machine::{ServiceCommand, StateMachineActor};
@@ -70,6 +71,7 @@ impl VpnService {
         candidate: ProxyCandidate,
         access_token: &str,
         mode: ConnectionMode,
+        token_provider: Option<Arc<dyn TokenProvider>>,
     ) -> Result<(), ServiceError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
@@ -77,6 +79,7 @@ impl VpnService {
                 candidate,
                 access_token: access_token.to_string(),
                 mode,
+                token_provider,
                 reply: reply_tx,
             })
             .await

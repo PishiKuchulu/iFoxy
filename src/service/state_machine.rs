@@ -1,3 +1,4 @@
+use crate::auth::token_provider::TokenProvider;
 use crate::guardian::client::GuardianClient;
 use crate::servers::model::ProxyCandidate;
 use crate::service::vpn_service::{ConnectionMode, ConnectionState, ServiceError};
@@ -54,6 +55,16 @@ pub enum ServiceCommand {
         candidate: ProxyCandidate,
         access_token: String,
         mode: ConnectionMode,
+        /// Live credential source for the token-renewal worker. When
+        /// present, renewal fetches a fresh (possibly refreshed) access
+        /// token from the provider on every cycle instead of re-sending
+        /// the connect-time token forever (external review, P2): a
+        /// long-lived session used to die at renewal time once the
+        /// connect-time token expired, and `TokenRefreshed` only updated
+        /// the H2 session, never the renewal worker. `None` (tests, or
+        /// callers without a provider) keeps the old static-token
+        /// behaviour.
+        token_provider: Option<Arc<dyn TokenProvider>>,
         reply: oneshot::Sender<Result<(), ServiceError>>,
     },
     Cancel,
@@ -172,6 +183,10 @@ pub struct StateMachineActor {
     reconnecting_cancel: Option<CancellationToken>,
     reconnecting_handle: Option<JoinHandle<()>>,
     custom_roots: Option<rustls::RootCertStore>,
+    /// Credential source handed in by the last Connect command, kept so
+    /// reconnect attempts (which re-run `perform_connect_task`) renew
+    /// with fresh tokens too. Cleared on Disconnect.
+    token_provider: Option<Arc<dyn TokenProvider>>,
     /// Kill switch retained after a Full-mode reconnect exhaustion
     /// (see ServiceCommand::RetainKillSwitch): traffic stays blocked
     /// in the Failed state until the user disconnects or reconnects.
@@ -211,6 +226,7 @@ impl StateMachineActor {
             reconnecting_cancel: None,
             reconnecting_handle: None,
             custom_roots,
+            token_provider: None,
             retained_killswitch: None,
         };
 
@@ -275,8 +291,12 @@ impl StateMachineActor {
                 candidate,
                 access_token,
                 mode,
+                token_provider,
                 reply,
             } => {
+                // Remember the provider for reconnect attempts, which
+                // re-run perform_connect_task from handle_supervision.
+                self.token_provider = token_provider.clone();
                 let current = self.state_tx.borrow().clone();
                 if current == ConnectionState::Connecting
                     || matches!(current, ConnectionState::Connected { .. })
@@ -307,6 +327,7 @@ impl StateMachineActor {
                         guardian,
                         cand_clone,
                         token_clone,
+                        token_provider,
                         mode,
                         cancel_clone,
                         sup_tx,
@@ -331,6 +352,7 @@ impl StateMachineActor {
 
             ServiceCommand::Disconnect { reply } => {
                 let _ = self.state_tx.send(ConnectionState::Disconnecting);
+                self.token_provider = None;
                 self.abort_in_flight_operations().await;
                 self.perform_disconnect().await;
                 let _ = self.state_tx.send(ConnectionState::Disconnected);
@@ -475,6 +497,7 @@ impl StateMachineActor {
         guardian: Arc<GuardianClient>,
         candidate: ProxyCandidate,
         access_token: String,
+        token_provider: Option<Arc<dyn TokenProvider>>,
         mode: ConnectionMode,
         cancel_token: CancellationToken,
         supervision_tx: mpsc::Sender<SupervisionEvent>,
@@ -785,15 +808,27 @@ impl StateMachineActor {
             }
         });
 
-        // Token renewal worker
+        // Token renewal worker: prefer the live provider so renewal
+        // fetches a fresh token each cycle (see Connect's
+        // token_provider); fall back to the connect-time token when no
+        // provider was supplied.
         let renewal_worker = TokenRenewalWorker::new();
-        let renewal_handle = renewal_worker.start(
-            guardian.clone(),
-            guardian.endpoint().to_string(),
-            access_token.clone(),
-            h2_session.clone(),
-            proxy_pass.expires_at_epoch_seconds,
-        );
+        let renewal_handle = match token_provider {
+            Some(provider) => renewal_worker.start_with_provider(
+                guardian.clone(),
+                guardian.endpoint().to_string(),
+                provider,
+                h2_session.clone(),
+                proxy_pass.expires_at_epoch_seconds,
+            ),
+            None => renewal_worker.start(
+                guardian.clone(),
+                guardian.endpoint().to_string(),
+                access_token.clone(),
+                h2_session.clone(),
+                proxy_pass.expires_at_epoch_seconds,
+            ),
+        };
         tracker.track(renewal_handle);
 
         Ok(SessionContext {
@@ -850,6 +885,9 @@ impl StateMachineActor {
             let target = session.candidate.clone();
             let mode = session.mode;
             let token = session.access_token.clone();
+            // Reconnect attempts renew through the same live provider
+            // the original Connect supplied, not the stale session token.
+            let provider_clone = self.token_provider.clone();
 
             // Clean up the old session's data path, but deliberately do NOT
             // clean the kill switch here: it is carried forward into the
@@ -923,6 +961,7 @@ impl StateMachineActor {
                         guardian.clone(),
                         target.clone(),
                         token.clone(),
+                        provider_clone.clone(),
                         mode,
                         cancel_clone.clone(),
                         sup_tx,
