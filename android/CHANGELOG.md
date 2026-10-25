@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.21 (versionCode 58) — second external-review wave
+
+- **Netty 4.1.119.Final → 4.1.139.Final** (all four artifacts:
+  handler, codec-http2, transport, handler-proxy). The October 2026
+  release is a security release fixing codec-http2, codec-http and
+  handler issues present in 4.1.119. Note: Netty 4.1 reaches
+  End-of-Life 2027-07-01; migrating to 4.2 is tracked future work.
+- **Encrypted-store fallback is fail-closed.** The old
+  `createEncryptedPrefsWithRecovery` fell back to a PLAINTEXT
+  SharedPreferences file on the second failure — OAuth tokens, the
+  multi-account vault and cached credentials could be written to
+  disk unencrypted, and no code ever read that file back or deleted
+  it. The fallback is removed entirely: persistent failure now
+  yields a session-only in-memory store (nothing touches disk; the
+  session must be re-entered after restart), and any leftover
+  `_plain_fallback` file from the old version is deleted
+  best-effort whenever the store opens (it was never read by any
+  version, so deletion loses nothing). New unit tests cover the
+  in-memory store's semantics (7 tests).
+- **Control-plane `protect()` failure is fail-closed.** A refused
+  `VpnService.protect()` used to log a warning and hand the
+  unprotected socket back, routing control-plane traffic through
+  the tunnel. The socket is now closed and the request fails with
+  a connect error. The null-protector case stays as the explicit
+  no-protect path (proxyOnlyMode sets it deliberately — no TUN
+  exists to leak into).
+- **Known remaining, unchanged:** TOTP-only FxA sign-in; ProGuard
+  keep narrowing and minified-release on-device validation (no
+  record of a minified release run exists yet); dependency locking
+  (needs a Gradle run to generate lock files); lint report-only
+  (no baseline; flipping the gate blind risks red CI). Non-loopback
+  proxy bind stays loopback-default and opt-in behind the explicit
+  risk confirmation dialog plus the SEC-FX-05 startup warning.
+
 ## 1.0.20 (versionCode 57) — fix-wave correction, round 4
 
 - No Android code changes. The v1.0.19 tag's Linux build failed in
