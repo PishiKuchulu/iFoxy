@@ -361,7 +361,7 @@ internal suspend fun runTokenExchangeInPage(
 }
 
 @Composable
-fun BrowserLoginScreen(
+internal fun BrowserLoginScreen(
     startUrl: String,
     busy: Boolean,
     errorMessage: String? = null,
