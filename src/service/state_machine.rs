@@ -65,6 +65,12 @@ pub enum ServiceCommand {
         /// callers without a provider) keeps the old static-token
         /// behaviour.
         token_provider: Option<Arc<dyn TokenProvider>>,
+        /// Ranked alternate edges (best first, primary NOT included).
+        /// Supervision reconnect attempts cycle through the primary and
+        /// then these instead of retrying one dead edge five times
+        /// (wave-3 review, H-4). Empty keeps the old primary-only
+        /// behavior.
+        failover_candidates: Vec<ProxyCandidate>,
         reply: oneshot::Sender<Result<(), ServiceError>>,
     },
     Cancel,
@@ -187,6 +193,8 @@ pub struct StateMachineActor {
     /// reconnect attempts (which re-run `perform_connect_task`) renew
     /// with fresh tokens too. Cleared on Disconnect.
     token_provider: Option<Arc<dyn TokenProvider>>,
+    /// Ranked failover edges from the last Connect command (H-4).
+    failover_candidates: Vec<ProxyCandidate>,
     /// Kill switch retained after a Full-mode reconnect exhaustion
     /// (see ServiceCommand::RetainKillSwitch): traffic stays blocked
     /// in the Failed state until the user disconnects or reconnects.
@@ -227,6 +235,7 @@ impl StateMachineActor {
             reconnecting_handle: None,
             custom_roots,
             token_provider: None,
+            failover_candidates: Vec::new(),
             retained_killswitch: None,
         };
 
@@ -292,11 +301,13 @@ impl StateMachineActor {
                 access_token,
                 mode,
                 token_provider,
+                failover_candidates,
                 reply,
             } => {
                 // Remember the provider for reconnect attempts, which
                 // re-run perform_connect_task from handle_supervision.
                 self.token_provider = token_provider.clone();
+                self.failover_candidates = failover_candidates;
                 let current = self.state_tx.borrow().clone();
                 if current == ConnectionState::Connecting
                     || matches!(current, ConnectionState::Connected { .. })
@@ -345,6 +356,8 @@ impl StateMachineActor {
             }
 
             ServiceCommand::Cancel => {
+                self.token_provider = None;
+                self.failover_candidates.clear();
                 self.abort_in_flight_operations().await;
                 self.perform_disconnect().await;
                 let _ = self.state_tx.send(ConnectionState::Disconnected);
@@ -353,6 +366,7 @@ impl StateMachineActor {
             ServiceCommand::Disconnect { reply } => {
                 let _ = self.state_tx.send(ConnectionState::Disconnecting);
                 self.token_provider = None;
+                self.failover_candidates.clear();
                 self.abort_in_flight_operations().await;
                 self.perform_disconnect().await;
                 let _ = self.state_tx.send(ConnectionState::Disconnected);
@@ -882,12 +896,20 @@ impl StateMachineActor {
     async fn handle_supervision(&mut self, event: SupervisionEvent) {
         tracing::warn!("Supervision event triggered: {:?}", event);
         if let Some(session) = self.active_session.take() {
-            let target = session.candidate.clone();
             let mode = session.mode;
             let token = session.access_token.clone();
             // Reconnect attempts renew through the same live provider
             // the original Connect supplied, not the stale session token.
             let provider_clone = self.token_provider.clone();
+            // Edge failover (H-4): attempts cycle through the session's
+            // edge first, then the ranked alternates captured at Connect
+            // time, instead of retrying one dead edge five times.
+            let mut targets = vec![session.candidate.clone()];
+            for alt in &self.failover_candidates {
+                if !targets.iter().any(|t| t.host == alt.host && t.port == alt.port) {
+                    targets.push(alt.clone());
+                }
+            }
 
             // Clean up the old session's data path, but deliberately do NOT
             // clean the kill switch here: it is carried forward into the
@@ -934,9 +956,14 @@ impl StateMachineActor {
                         return;
                     }
 
+                    // Cycle edges: attempt 1 retries the session's own
+                    // edge, later attempts walk the failover list (H-4).
+                    let attempt_target =
+                        targets[(attempt - 1) as usize % targets.len()].clone();
+
                     let _ = state_tx.send(ConnectionState::Reconnecting {
                         attempt,
-                        target: target.clone(),
+                        target: attempt_target.clone(),
                     });
 
                     let backoff_secs = 1u64 << (attempt - 1).min(4);
@@ -959,7 +986,7 @@ impl StateMachineActor {
 
                     match Self::perform_connect_task(
                         guardian.clone(),
-                        target.clone(),
+                        attempt_target,
                         token.clone(),
                         provider_clone.clone(),
                         mode,

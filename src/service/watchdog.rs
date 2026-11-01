@@ -74,7 +74,15 @@ impl TokenRenewalWorker {
                     current_expires_at
                 );
 
-                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                // Sleep in short slices so stop() takes effect within
+                // ~2 s instead of only after the full renewal delay
+                // (which can be 1800 s) (wave-3 review, M-12).
+                let mut remaining = delay_secs;
+                while remaining > 0 && running.load(Ordering::SeqCst) {
+                    let slice = remaining.min(2);
+                    tokio::time::sleep(Duration::from_secs(slice)).await;
+                    remaining -= slice;
+                }
 
                 if !running.load(Ordering::SeqCst) {
                     break;

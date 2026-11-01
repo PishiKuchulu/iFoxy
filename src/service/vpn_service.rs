@@ -72,6 +72,7 @@ impl VpnService {
         access_token: &str,
         mode: ConnectionMode,
         token_provider: Option<Arc<dyn TokenProvider>>,
+        failover_candidates: Vec<ProxyCandidate>,
     ) -> Result<(), ServiceError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
@@ -80,6 +81,7 @@ impl VpnService {
                 access_token: access_token.to_string(),
                 mode,
                 token_provider,
+                failover_candidates,
                 reply: reply_tx,
             })
             .await
@@ -96,9 +98,15 @@ impl VpnService {
 
     pub fn disconnect(&self) -> Result<(), ServiceError> {
         let (reply_tx, _reply_rx) = oneshot::channel();
-        let _ = self
-            .cmd_tx
-            .try_send(ServiceCommand::Disconnect { reply: reply_tx });
+        // Report a failed enqueue honestly (wave-3 review, M-13): the
+        // old code discarded the try_send result and always returned Ok,
+        // so callers logged "disconnected cleanly" even when no
+        // Disconnect command ever reached the actor.
+        self.cmd_tx
+            .try_send(ServiceCommand::Disconnect { reply: reply_tx })
+            .map_err(|e| {
+                ServiceError::Vpn(format!("Failed to enqueue Disconnect command: {e}"))
+            })?;
         Ok(())
     }
 
