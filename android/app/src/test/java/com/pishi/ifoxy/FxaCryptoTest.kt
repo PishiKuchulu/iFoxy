@@ -6,10 +6,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * TST-FX-11: the FxA login derives all of its key material with hand-rolled
- * PBKDF2/HKDF (FxaAuthRepository). These known-answer tests pin that math to
- * published vectors so a future refactor cannot silently corrupt logins —
- * or, worse, weaken the derived credentials.
+ * TST-FX-11: the FxA key material is derived with hand-rolled HKDF
+ * (FxaAuthRepository — Hawk credentials from the session token). These
+ * known-answer tests pin that math to published vectors so a future
+ * refactor cannot silently corrupt sign-ins — or, worse, weaken the
+ * derived credentials. PBKDF2 belonged to the retired password login
+ * (removed with the browser sign-in); the primitive and its vectors
+ * are retained as a pinned, verified building block.
  */
 class FxaCryptoTest {
 
