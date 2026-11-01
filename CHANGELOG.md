@@ -1,5 +1,186 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## 0.2.3 — Third external-review wave
+
+Fixes from a third full external code review, this time of the
+v1.0.21 tree. As before, every finding was re-verified against the
+source before being acted on. The review was largely accurate;
+corrections worth recording: the docs-count finding (L-20) was
+already fixed in wave 2 and quoted stale text; the README version
+mentions it flagged (DOC-1) are historical "since v1.0.8" markers,
+not a stale current version; the Android widget finding (A-3)
+missed the per-install guard token that already gates the exported
+receiver; and one C-2 citation pointed at unrelated routing code
+(the real elevated write was in the recovery journal). Several
+Low-severity items were verified in aggregate rather than line by
+line; where a claim did not hold up it is listed as not acted on.
+
+- **Crash recovery no longer fails open (C-1).** Restores whose
+  failure leaves the machine broken — system proxy, recorded
+  kill-switch filters, resolv.conf — are now hard failures:
+  `recover_if_dirty` returns `RecoveryIncomplete`, the journal file
+  is KEPT so the next start retries, and startup refuses (the
+  parse-error path was already fatal since wave 2). Route deletions
+  stay best-effort with loud logging, and on Linux a best-effort
+  sweep removes a stale iptables chain even when the journal
+  recorded no filters.
+- **Journal-supplied resolv.conf is validated before the elevated
+  write (C-2).** The recovery journal lives in a user-writable
+  directory, so its recorded `/etc/resolv.conf` contents are now
+  checked line by line (only `nameserver <IP>`, `search`, `domain`,
+  `options`, `sortlist`, comments and blanks; 64 KiB cap) before
+  the root process writes them back. Invalid content fails
+  recovery instead of being installed.
+- **System tools are invoked by absolute path (C-3).** A new
+  `syscmd` module resolves `ip`, `iptables`-adjacent helpers,
+  `pkexec`, `gsettings`, `netsh` and friends under System32 /
+  /usr/sbin / /sbin / /usr/bin instead of trusting the elevated
+  process's PATH. Two residuals are by design and documented in
+  docs/SECURITY.md §2.8: the elevated process keeps state in the
+  user's home (that is where the FxA session lives), and the
+  pkexec environment passthrough is deliberate (the desktop
+  session variables are required for the GUI to appear).
+- **Logging reaches disk from every thread (C-4).** The rolling
+  file logger was installed as a thread-local default, so Tokio
+  worker events were silently dropped; it is now the global
+  default, and lines are assembled whole before redaction and
+  rotation instead of treating each `write()` as a line.
+- **Windows CI now runs the test suite (C-5).** The Windows
+  workflow previously stopped at clippy + build; it runs
+  `cargo test` as well. A stale "never compiled" comment in the
+  kill-switch module (CI compiles it every run) was corrected.
+- **Proxy restore reports and propagates partial failures (H-1,
+  L-12, L-13).** The Windows registry restore returns an error
+  when any recorded value cannot be restored, deletes values the
+  backup recorded as absent instead of leaving VPN-era values
+  behind, and decodes UTF-16 registry strings without an
+  unaligned `u16` cast.
+- **Elevation is checked by token, not group membership (H-2).**
+  `IsUserAnAdmin` also returns true for a standard user in the
+  Administrators group running un-elevated; the check now reads
+  `TokenElevation` from the process token and fails closed.
+- **Reconnect rotates across servers (H-4).** The actor retries
+  used to hit the same candidate five times. Connect now carries
+  a ranked failover list (the UI gathers candidates across all
+  countries, not a hardcoded "DE" recommendation), and each
+  attempt walks the list round-robin until one connects.
+- **The netstack validates what it forwards (H-5).** IPv4 header
+  checksums are verified, fragmented datagrams are dropped
+  (fragments were parsed but never reassembled or consumed), and
+  TCP/UDP checksums are verified before a packet reaches a flow.
+- **TCP window scaling is negotiated (H-6).** SYN-ACK now offers
+  window scale 2 (a 256 KiB receive window, up from a fixed
+  64 KiB), and the peer's scale is parsed and applied; the SYN
+  window itself stays unscaled per RFC 7323.
+- **DNS cache honours upstream TTLs (H-7).** Cache lifetime is
+  the response's minimum answer TTL (never below 5 s, and capped
+  by the cache's 60 s freshness policy) instead of a fixed 60 s
+  regardless of what the records said; concurrent upstream resolutions are
+  bounded (16) instead of one unbounded spawn per query; locally
+  generated DNS responses use a rotating IP identification
+  instead of a constant. The tunnel-DNS endpoint itself is
+  unchanged (see docs/SECURITY.md §2.8).
+- **Dead upstream connect path removed (H-8).** An unused
+  `H2UpstreamSession::connect` did blocking DNS resolution on a
+  Tokio worker; the live path already resolves via
+  `spawn_blocking` with a timeout. Lock-poisoning panics
+  (H-9) were swept to the recover-from-poison pattern the
+  codebase already used in places, and Linux TUN setup (H-10)
+  uses idempotent `ip addr replace` instead of matching an
+  English "File exists" error string.
+- **Control-API hardening (M-2, M-3).** The CSP `connect-src`
+  wildcard ports are gone (`'self'` only), an `Origin: null`
+  header is no longer accepted (the UI is served by this same
+  server, so only its own loopback origins are valid), and
+  responses gained Referrer-Policy, COOP and Permissions-Policy
+  headers. If the preferred UI port (44123) is taken, the random
+  fallback now logs a warning naming the preferred port instead
+  of silently binding elsewhere.
+- **Credential hygiene (M-5, M-6, M-14).** FxA intermediates are
+  zeroized (quick-stretched key, HKDF outputs, HAWK key copies);
+  the `authPW` copy inside the login JSON body is overwritten
+  immediately after the request is sent. Pending two-factor
+  state now expires after 10 minutes, allows at most 5 attempts,
+  and is zeroized on expiry, exhaustion and success (it
+  previously lived, unbounded, until sign-in or process exit).
+  The UI no longer logs the 2FA code it verifies, and the
+  password field is cleared on successful login instead of only
+  on sign-out. (`StoredSecrets` keeps its `Clone` derive — the
+  storage layer needs it — and still zeroizes on drop.)
+- **Guardian challenge is solved against the challenged origin
+  (M-7).** The proof-of-work cookie was installed under the FxA
+  host while the 406 challenge comes from the Guardian host, so
+  the retry could never carry it. All three call sites now use
+  the challenged request's own origin. The PoW search parameters
+  are unchanged (they are server-issued; what difficulty Mozilla
+  actually demands cannot be verified offline).
+- **Guardian endpoint override is debug-only (M-8).**
+  `IFOXY_GUARDIAN_ENDPOINT` used to redirect the bearer token to
+  an arbitrary host in release builds; it is honored only under
+  `debug_assertions` (tests use it there).
+- **Linux DNS guard restores safely (M-10, M-11).** The TUN
+  device's `Drop` restores `/etc/resolv.conf` only when the
+  file still contains exactly what that device wrote (a newer
+  session's DNS is never clobbered by a stale device), the
+  journal entry is cleared only on an actual restore, and the
+  fallback writer refuses to follow a symlinked
+  `/etc/resolv.conf`.
+- **Watchdog stop is responsive (M-12)** — the renewal sleep is
+  chunked so `stop()` takes effect within ~2 s instead of up to
+  the 30-minute renewal interval.
+- **Disconnect reports failure (M-13).** A failed disconnect
+  command now returns an error to the UI instead of logging
+  "disconnected cleanly" unconditionally.
+- **Smaller items.** `APP_VERSION` is derived from Cargo.toml
+  (M-1; it had drifted). The misleading always-true
+  single-instance test helper is removed (M-4). A bogus ACK can
+  no longer collapse the per-flow in-flight calculation (L-3).
+  IP packet serialization honours the parsed IHL and uses a
+  rotating identification instead of the constant `0x4242`
+  (L-5). Route prefix masks are clamped to /32 (L-11). A
+  duplicate-instance exit shows the fatal-error dialog instead
+  of an invisible console message under the Windows GUI
+  subsystem (L-15). Authenticode verification now checks
+  revocation for the whole chain, warning only when revocation
+  servers are unreachable (L-18). The splash subtitle no longer
+  says "Windows Desktop Edition" on Linux (L-22).
+- **CI and installers.** Workflow permissions are least
+  privilege: build jobs run with `contents: read` (including on
+  pull requests) and publishing moved to a separate tag-gated
+  job with `contents: write` (S-2). Every third-party action is
+  pinned to a full commit SHA (S-4). Both installers verify the
+  SHA-256 sidecar shipped with each release before installing,
+  and refuse on mismatch (S-7).
+- **Tests.** New `tests/review3_fixes_test.rs` (7 tests) pins
+  the C-1/C-2 recovery behaviour, the M-1 version derivation and
+  the H-7 TTL parsing.
+
+Known remaining (deliberately not fixed this wave):
+- Local-proxy authentication (H-3): on desktop the proxy binds
+  loopback only — the bind address is hardcoded, not
+  configurable, so the non-loopback exposure the finding assumes
+  cannot occur; and SOCKS5 credentials cannot be presented by
+  the OS system-proxy integration the feature exists for. The
+  trade-off is documented in docs/SECURITY.md §2.8. Android's
+  opt-in non-loopback bind keeps its confirmation dialog and
+  startup warning.
+- Packet-pump shutdown redesign (M-9): the blocked-reader
+  teardown needs a pump architecture change. The concrete harm
+  it enabled (a stale device clobbering a newer session's
+  resolv.conf) is closed by the M-10 content guard above.
+- Android: the upstream-trust store merging system roots (A-2)
+  is by design; alpha-channel dependencies (A-4) have no stable
+  equivalents yet and ProGuard keep narrowing still needs
+  on-device validation of a minified build.
+- All three platform workflows publish into the one combined
+  release (S-3) — that is the product's release shape, kept.
+  Dependency audit automation (S-5) is not added; Cargo.lock is
+  committed and CI builds resolve against it.
+- Carried over unchanged: UI/service privilege split (redesign),
+  TOTP-only FxA sign-in, gateway-less (PPP) route detection on
+  Linux, Android lint report-only and dependency locking
+  (reasons in the 0.2.2 entry).
+
 ## 0.2.2 — Second external-review wave
 
 Fixes from a second full external code review of the v1.0.20 tree.
