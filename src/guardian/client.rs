@@ -45,6 +45,25 @@ pub struct Entitlement {
     pub quota_remaining: Option<u64>,
 }
 
+/// scheme://authority of a URL (everything before the first path
+/// slash). The Fastly client challenge must be solved against the host
+/// that ISSUED the 406 (wave-3 review, M-7): this code previously
+/// always solved against api.accounts.firefox.com while the Guardian
+/// endpoints live on vpn.mozilla.org, so the challenge cookie landed in
+/// the wrong domain and the retry after a 406 could never succeed.
+fn origin_of(url: &str) -> String {
+    match url.find("://") {
+        Some(i) => {
+            let rest = &url[i + 3..];
+            match rest.find('/') {
+                Some(j) => url[..i + 3 + j].to_string(),
+                None => url.to_string(),
+            }
+        }
+        None => url.to_string(),
+    }
+}
+
 pub struct GuardianClient {
     client: Client,
     solver: FastlyChallengeSolver,
@@ -53,15 +72,23 @@ pub struct GuardianClient {
 
 impl GuardianClient {
     pub fn new() -> Self {
-        // IFOXY_GUARDIAN_ENDPOINT overrides the endpoint (tests,
-        // staging): the actor-cancellation test used to fire a real
-        // request at vpn.mozilla.org on every run because there was no
-        // way to point the production-constructed client elsewhere
-        // (external review, M5).
-        match std::env::var("IFOXY_GUARDIAN_ENDPOINT") {
-            Ok(ep) if !ep.trim().is_empty() => Self::with_endpoint(ep.trim()),
-            _ => Self::with_endpoint(GUARDIAN_ENDPOINT_DEFAULT),
+        // IFOXY_GUARDIAN_ENDPOINT overrides the endpoint in DEBUG builds
+        // only (tests, staging): the actor-cancellation test used to fire
+        // a real request at vpn.mozilla.org on every run because there was
+        // no way to point the production-constructed client elsewhere
+        // (external review, M5). Release builds ignore the variable —
+        // honoring it there would send the user's FxA Bearer token to an
+        // arbitrary host (wave-3 review, M-8). Tests construct the client
+        // via `with_endpoint` or run in debug builds, where the override
+        // remains available.
+        if cfg!(debug_assertions) {
+            if let Ok(ep) = std::env::var("IFOXY_GUARDIAN_ENDPOINT") {
+                if !ep.trim().is_empty() {
+                    return Self::with_endpoint(ep.trim());
+                }
+            }
         }
+        Self::with_endpoint(GUARDIAN_ENDPOINT_DEFAULT)
     }
 
     pub fn with_endpoint(endpoint: &str) -> Self {
@@ -126,7 +153,7 @@ impl GuardianClient {
 
         if res.status().as_u16() == 406 {
             self.solver
-                .solve_and_install("https://api.accounts.firefox.com")
+                .solve_and_install(&origin_of(&url))
                 .await?;
             res = self
                 .client
@@ -151,7 +178,7 @@ impl GuardianClient {
                     .await?;
                 if res.status().as_u16() == 406 {
                     self.solver
-                        .solve_and_install("https://api.accounts.firefox.com")
+                        .solve_and_install(&origin_of(&url))
                         .await?;
                     res = self.client.get(&url).headers(headers).send().await?;
                 }
@@ -280,7 +307,7 @@ impl GuardianClient {
 
         if res.status().as_u16() == 406 {
             self.solver
-                .solve_and_install("https://api.accounts.firefox.com")
+                .solve_and_install(&origin_of(&url))
                 .await?;
             res = self.client.post(&url).headers(headers).send().await?;
         }
