@@ -1,5 +1,13 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.24 combined release — Android 406 solver fix (desktop unchanged)
+
+The desktop code is unchanged in this release (still 0.2.3). Android
+1.0.24 (versionCode 61) fixes sign-in completion on networks where
+Mozilla's bot protection still blocked the token exchange after the
+in-app browser sign-in: the challenge solver now solves the served 406
+challenge. Supersedes v1.0.23.
+
 ## v1.0.23 combined release — Android sign-in fix (desktop unchanged)
 
 The desktop code is unchanged in this release (still 0.2.3). The
