@@ -41,11 +41,19 @@ class FxaRefreshFailure(
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
+/** Mozilla's bot protection (HTTP 406) could not be cleared automatically
+ *  on this network; the message is user-facing and actionable. */
+class FastlyBlockedException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 private const val FXA_AUTH_SERVER = "https://api.accounts.firefox.com/v1"
 private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
 private const val PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/"
 private const val FXA_MAX_CHALLENGE_ATTEMPTS = 5
+private const val FRIENDLY_406_MESSAGE =
+    "Mozilla's bot protection rejected this request (HTTP 406) and the automatic " +
+        "challenge could not be completed on this network. Please switch networks " +
+        "(Wi-Fi <-> mobile data) and try again."
 private const val DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 /** The FxA sign-in page in its WebChannel ("browser") context: after a
@@ -276,11 +284,23 @@ class FxaAuthRepository(
             return builder.build()
         }
 
+        val origin = "${url.scheme}://${url.host}"
         var response: Response = ControlPlaneHttp.client.newCall(buildRequest()).execute()
         var attempts = 1
         while (response.code == 406 && attempts < FXA_MAX_CHALLENGE_ATTEMPTS) {
-            response.close()
-            challengeSolver.solveAndInstall()
+            // Solve the challenge carried by THIS 406 response: fetching a
+            // fresh challenge page from the host root does not clear the
+            // block on flagged networks (upstream v1.0.8 finding, verified
+            // on-device against iFoxy 1.0.23).
+            val challengedBody = response.use { it.body?.string().orEmpty() }
+            try {
+                challengeSolver.solveAndInstall(challengedBody, origin)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (solveFailure: Exception) {
+                AppLogger.w(TAG, "could not solve the Fastly challenge", solveFailure)
+                throw FastlyBlockedException(FRIENDLY_406_MESSAGE, solveFailure)
+            }
             response = ControlPlaneHttp.client.newCall(buildRequest()).execute()
             attempts++
         }
@@ -288,6 +308,9 @@ class FxaAuthRepository(
         response.use { resp ->
             val text = resp.body?.string().orEmpty()
             if (resp.code >= 400) {
+                if (resp.code == 406) {
+                    throw FastlyBlockedException(FRIENDLY_406_MESSAGE)
+                }
                 val errorBody = try {
                     JSONObject(text)
                 } catch (e: Exception) {
