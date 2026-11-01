@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.0.23 (versionCode 60) — browser sign-in (Mozilla anti-bot fix)
+
+Desktop ships unchanged as 0.2.3 in the same combined release;
+this wave is Android-only.
+
+- **Sign-in moved to Mozilla's official page, inside the app.** The
+  direct API login (email + password against
+  `api.accounts.firefox.com`) is now blocked by Mozilla's bot
+  protection (HTTP 406) for many users, so fresh sign-ins failed
+  while already-signed-in sessions kept working. Sign-in now opens
+  the official Firefox Accounts page in an in-app browser view; the
+  password and any verification code are entered on Mozilla's page
+  and never pass through this app's code, and two-factor / email-code
+  verification is handled by the page itself. The page hands the app
+  a session token through the FxA WebChannel protocol, which is
+  exchanged for the same OAuth access/refresh tokens as before.
+  Firefox accounts that sign in with Google or Apple cannot be used
+  on the in-app page (Mozilla does not support them in embedded
+  browsers). Existing sessions are unaffected — stored refresh
+  tokens keep working and only fresh sign-ins use the new flow.
+  Removed with the old flow: the in-app credential form, the
+  `/account/login` call and its password-stretching code, and the
+  pending-session-token store (the PBKDF2 primitive itself is
+  retained, pinned by its known-answer tests). The multi-account
+  vault now files a browser sign-in by asking the FxA profile
+  endpoint for the account's email after the session is established.
+- **Guardian 401 spiral fixed.** When Guardian rejected a stored
+  access token, the connect path activated the entitlement with the
+  same dead token and failed with a second 401 ("failed to activate
+  guardian entitlement: HTTP 401"). It now renews the token first
+  and only falls back to activation if the renewed token is also
+  rejected (or renewal itself fails).
+- **Update dialog redesigned.** The plain system dialogs are
+  replaced by the themed update popup designed for Anvex — dark
+  glassy card, glowing download glyph, current → new version card,
+  asset chip with the expected SHA-256, gradient progress bar with
+  byte counter, breathing glow/border and a shimmer sweep while
+  downloading — restyled to the iFoxy palette and Poppins. The
+  update controller, its state machine, and the wave-3 download
+  verification (mandatory digest + release-signer check) are
+  unchanged.
+- **Control-plane User-Agent corrected** to report Android
+  (`sys:android 14`); it previously claimed `sys:linux` (finding
+  A-5a from the second review, fixed upstream in their v1.0.8 as
+  well).
+
 ## 1.0.22 (versionCode 59) — third external-review wave
 
 Desktop ships as 0.2.3 in the same combined release; the desktop
