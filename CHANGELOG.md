@@ -1,5 +1,14 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.23 combined release — Android sign-in fix (desktop unchanged)
+
+The desktop code is unchanged in this release (still 0.2.3). The
+combined v1.0.23 tag exists for the Android client, whose direct
+API sign-in is blocked by Mozilla's bot protection (HTTP 406);
+Android 1.0.23 moves sign-in to Mozilla's official page inside the
+app. See android/CHANGELOG.md. This release supersedes the partial
+v1.0.22 release (whose Windows asset never published).
+
 ## 0.2.3 — Third external-review wave
 
 Fixes from a third full external code review, this time of the
