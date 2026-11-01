@@ -1,5 +1,12 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.25 combined release - signed-out Settings/Logs access (desktop unchanged)
+
+The desktop code is unchanged in this release (still 0.2.3). Android
+1.0.25 (versionCode 62) lets a signed-out user reach Settings and Logs
+from the sign-in screen, so a broken sign-in no longer locks diagnostics
+away. Supersedes v1.0.24.
+
 ## v1.0.24 combined release — Android 406 solver fix (desktop unchanged)
 
 The desktop code is unchanged in this release (still 0.2.3). Android
