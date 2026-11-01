@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,6 +67,8 @@ import kotlinx.coroutines.launch
 fun LoginScreen(
     authRepository: FxaAuthRepository,
     onSignedIn: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    onOpenLogs: () -> Unit = {},
 ) {
     var browserStartUrl by rememberSaveable { mutableStateOf<String?>(null) }
     var completingBrowserLogin by rememberSaveable { mutableStateOf(false) }
@@ -110,6 +114,7 @@ fun LoginScreen(
                 completingBrowserLogin = false
                 errorMessage = null
             },
+            onOpenLogs = onOpenLogs,
         )
         return
     }
@@ -286,6 +291,38 @@ fun LoginScreen(
                 color = Color.White.copy(alpha = 0.4f),
                 textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(26.dp))
+            // The sign-in gate must not lock the user out of the rest of
+            // the app: Settings and Logs stay reachable while signed out
+            // (support and diagnostics depend on them exactly when
+            // sign-in itself is broken).
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                TextButton(onClick = onOpenSettings) {
+                    Text(
+                        "Settings",
+                        color = Color.White.copy(alpha = 0.55f),
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        ),
+                    )
+                }
+                TextButton(onClick = onOpenLogs) {
+                    Text(
+                        "Logs",
+                        color = Color.White.copy(alpha = 0.55f),
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        ),
+                    )
+                }
+            }
             Spacer(Modifier.height(32.dp))
         }
     }

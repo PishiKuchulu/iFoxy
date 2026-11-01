@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -303,6 +304,7 @@ fun BrowserLoginScreen(
     errorMessage: String? = null,
     onSessionCaptured: (String) -> Unit,
     onCanceled: () -> Unit,
+    onOpenLogs: () -> Unit = {},
 ) {
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var bridgeInstance by remember { mutableStateOf<WebChannelBridge?>(null) }
@@ -402,6 +404,22 @@ fun BrowserLoginScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            // Sign-in failures must not lock the user out of diagnostics:
+            // the logs are reachable straight from the error state.
+            TextButton(
+                onClick = onOpenLogs,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
+                Text(
+                    "Open logs",
+                    color = IFoxyYellow,
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.5.sp,
+                    ),
+                )
+            }
         }
         Box(Modifier.weight(1f)) {
             AndroidView(
