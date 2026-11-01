@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.22 (versionCode 59) — third external-review wave
+
+Desktop ships as 0.2.3 in the same combined release; the desktop
+half of this wave (recovery-journal hardening, netstack checksum
+validation and window scaling, control-API tightening, CI
+least-privilege and SHA pinning) is listed in the root CHANGELOG.
+Android-specific items:
+
+- **In-app updater verifies what it installs (A-1).** Two of the
+  three checks around the self-update were missing. A release
+  whose metadata carried no SHA-256 digest was installed with NO
+  hash verification at all (the digest is nullable in the update
+  metadata and the null case skipped the comparison); the updater
+  now fails closed — no digest, no install, partial download
+  deleted. And the downloaded APK's signing certificate is now
+  compared against the release certificate fingerprint
+  (`f5381666…0bee`) before the installer opens; a mismatch deletes
+  the file and aborts. `REQUEST_INSTALL_PACKAGES` stays in the
+  manifest: the in-app updater cannot request an install without
+  it. What was broken was never the permission — it was the
+  absent verification around it, which is now in place.
+- **Widget toggle (A-3) re-verified, no change:** the exported
+  receiver the review flagged already requires the per-install
+  `WidgetToggleGuard` token; broadcasts without it are dropped.
+- **Known remaining, unchanged:** upstream-trust store merges
+  system roots by design (A-2); alpha-channel dependencies
+  (security-crypto, material3) have no stable equivalents yet
+  and the Netty ProGuard keep rule stays wide until a minified
+  release is validated on a device (A-4); TOTP-only FxA sign-in;
+  dependency locking (needs a Gradle run to generate lock
+  files); lint report-only (no baseline yet). Non-loopback proxy
+  bind stays opt-in behind the risk confirmation dialog plus the
+  SEC-FX-05 startup warning.
+
 ## 1.0.21 (versionCode 58) — second external-review wave
 
 - **Netty 4.1.119.Final → 4.1.139.Final** (all four artifacts:
