@@ -1,5 +1,12 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.26 combined release - in-page token exchange (desktop unchanged)
+
+The desktop code is unchanged in this release (still 0.2.3). Android
+1.0.26 (versionCode 63) runs the post-sign-in token exchange inside the
+signed-in browser page (native exchange kept as fallback) and improves
+406 diagnostics in the in-app log. Supersedes v1.0.25.
+
 ## v1.0.25 combined release - signed-out Settings/Logs access (desktop unchanged)
 
 The desktop code is unchanged in this release (still 0.2.3). Android
