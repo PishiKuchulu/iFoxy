@@ -5,23 +5,63 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.pishi.ifoxy.BuildConfig
 import com.pishi.ifoxy.data.formatBytes
+import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
+import com.pishi.ifoxy.ui.theme.IFoxyInk
+import com.pishi.ifoxy.ui.theme.IFoxyNeonOrange
+import com.pishi.ifoxy.ui.theme.IFoxyYellow
+import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import com.pishi.ifoxy.util.AppUpdateChecker
 import com.pishi.ifoxy.util.UpdateInfo
 import kotlinx.coroutines.CancellationException
@@ -269,75 +309,394 @@ private fun apkSignerSha256(context: android.content.Context, file: File): Strin
         .joinToString("") { "%02x".format(it) }
 }
 
+
+// ---------------------------------------------------------------------------
+// Update dialog — the themed design built for Anvex's update popup (dark
+// glassy card, glowing download glyph, current → new version card, asset
+// chip, gradient progress bar with byte counter, and living color: the
+// glow and border breathe and a shimmer sweeps the bar while
+// downloading), restyled to the iFoxy palette and type. The controller
+// and its state machine above are unchanged — only the presentation
+// moved off the plain AlertDialog. Colors are explicit (always dark)
+// so the popup looks the same on light and dark system themes.
+// ---------------------------------------------------------------------------
+
+private val UpdateCardBg = Color(0xFF22232B)
+private val UpdateGlass = Color.White.copy(alpha = 0.08f)
+private val UpdateSubtitle = Color.White.copy(alpha = 0.65f)
+private val UpdateLabel = Color.White.copy(alpha = 0.55f)
+private val UpdateFileText = Color.White.copy(alpha = 0.85f)
+private val UpdateTrack = Color.White.copy(alpha = 0.12f)
+
 @Composable
 fun AppUpdateDialog(controller: AppUpdateController) {
     if (!controller.dialogVisible) return
     val context = LocalContext.current
-    when (val state = controller.state) {
-        is UpdateUiState.Available -> AlertDialog(
-            onDismissRequest = { controller.dismissDialog() },
-            title = { Text("Update available") },
-            text = {
-                Text(
-                    "iFoxy v${state.info.version} is available — you have " +
-                        "v${BuildConfig.VERSION_NAME}.\n\n" +
-                        "Download size: ${formatBytes(state.info.sizeBytes)}",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { controller.startDownload() }) { Text("Download") }
-            },
-            dismissButton = {
-                TextButton(onClick = { controller.dismissDialog() }) { Text("Later") }
-            },
-        )
+    val state = controller.state
+    val info = when (state) {
+        is UpdateUiState.Available -> state.info
+        is UpdateUiState.Downloading -> state.info
+        is UpdateUiState.ReadyToInstall -> state.info
+        else -> null
+    }
+    if (info == null && state !is UpdateUiState.Failed) return
 
-        is UpdateUiState.Downloading -> {
-            val fraction = if (state.total > 0) {
-                (state.downloaded.toFloat() / state.total.toFloat()).coerceIn(0f, 1f)
-            } else {
-                0f
-            }
-            AlertDialog(
-                onDismissRequest = { controller.dismissDialog() },
-                title = { Text("Downloading update") },
-                text = {
-                    Column {
-                        LinearProgressIndicator(progress = { fraction })
-                        Spacer(Modifier.height(8.dp))
-                        Text("${formatBytes(state.downloaded)} / ${formatBytes(state.total)}")
+    // Living color: a breathing glow, a breathing border, and a shimmer
+    // that sweeps the progress bar while downloading. One infinite
+    // transition drives all of them; it only runs while the dialog is
+    // composed, so nothing animates after dismissal.
+    val motion = rememberInfiniteTransition(label = "update-motion")
+    val glowPulse by motion.animateFloat(
+        initialValue = 0.30f,
+        targetValue = 0.60f,
+        animationSpec = infiniteRepeatable(tween(1800), RepeatMode.Reverse),
+        label = "glow-pulse",
+    )
+    val borderPulse by motion.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 0.80f,
+        animationSpec = infiniteRepeatable(tween(2400), RepeatMode.Reverse),
+        label = "border-pulse",
+    )
+    val shimmerPhase by motion.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart),
+        label = "shimmer-phase",
+    )
+
+    Dialog(
+        onDismissRequest = { controller.dismissDialog() },
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = UpdateCardBg,
+            border = BorderStroke(1.dp, IFoxyNeonOrange.copy(alpha = borderPulse)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                // Glowing download glyph over a soft orange radial glow.
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.size(84.dp).clip(CircleShape).background(
+                            Brush.radialGradient(
+                                listOf(
+                                    IFoxyNeonOrange.copy(alpha = glowPulse),
+                                    Color.Transparent,
+                                ),
+                            ),
+                        ),
+                    )
+                    Box(
+                        Modifier
+                            .size(64.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(UpdateCardBg)
+                            .border(1.5.dp, IFoxyNeonOrange, RoundedCornerShape(18.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.ArrowDownward,
+                            contentDescription = null,
+                            tint = if (state is UpdateUiState.Failed) IFoxyErrorOnDark else IFoxyYellow,
+                            modifier = Modifier.size(30.dp),
+                        )
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = { controller.cancelDownload() }) { Text("Cancel") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { controller.dismissDialog() }) { Text("Background") }
-                },
-            )
+                }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        when (state) {
+                            is UpdateUiState.Downloading -> "Downloading update"
+                            is UpdateUiState.ReadyToInstall -> "Ready to install"
+                            is UpdateUiState.Failed -> "Update failed"
+                            else -> "Update available"
+                        },
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = PoppinsFamily,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        when (state) {
+                            is UpdateUiState.ReadyToInstall -> "The new version has been downloaded"
+                            is UpdateUiState.Failed -> "Something went wrong while updating"
+                            else -> "A new version is ready"
+                        },
+                        color = UpdateSubtitle,
+                        fontSize = 14.sp,
+                        fontFamily = PoppinsFamily,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (info != null) {
+                    // Current → new version card.
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = UpdateGlass,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            UpdateVersionCell("Current", "v${BuildConfig.VERSION_NAME}", Color.White)
+                            Icon(
+                                Icons.Filled.ArrowForward,
+                                contentDescription = null,
+                                tint = IFoxyNeonOrange,
+                                modifier = Modifier.size(28.dp),
+                            )
+                            UpdateVersionCell("New", "v${info.version}", IFoxyYellow)
+                        }
+                    }
+                    // Asset chip: package glyph + file name + size.
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = UpdateGlass,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Archive,
+                                contentDescription = null,
+                                tint = UpdateLabel,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                "${info.assetName} · ${formatBytes(info.sizeBytes)}",
+                                color = UpdateFileText,
+                                fontSize = 13.5.sp,
+                                fontFamily = PoppinsFamily,
+                            )
+                        }
+                    }
+                    // The expected hash, so it can be compared against
+                    // the release page out-of-band.
+                    info.sha256?.let { sha ->
+                        Text(
+                            "SHA-256: $sha",
+                            color = UpdateLabel,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                if (state is UpdateUiState.Downloading) {
+                    val total = if (state.total > 0) state.total else info!!.sizeBytes
+                    val fraction = if (total > 0) {
+                        (state.downloaded.toFloat() / total).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    val percent = (fraction * 100).toInt()
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            "Downloading… $percent%",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontFamily = PoppinsFamily,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        BoxWithConstraints(
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            val barWidth = maxWidth
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                Box(
+                                    Modifier.fillMaxWidth().height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(UpdateTrack),
+                                )
+                                Box(
+                                    Modifier.fillMaxWidth(fraction).height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(
+                                            Brush.horizontalGradient(
+                                                listOf(IFoxyNeonOrange, IFoxyYellow),
+                                            ),
+                                        ),
+                                )
+                                // Shimmer band sweeping across the bar,
+                                // clipped to the bar's own rounded shape.
+                                Box(
+                                    Modifier.fillMaxWidth().height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                ) {
+                                    val bandWidth = barWidth * 0.35f
+                                    val bandX = barWidth * (shimmerPhase * 1.4f - 0.2f)
+                                    Box(
+                                        Modifier.offset(x = bandX).size(bandWidth, 8.dp)
+                                            .background(
+                                                Brush.horizontalGradient(
+                                                    listOf(
+                                                        Color.Transparent,
+                                                        Color.White.copy(alpha = 0.35f),
+                                                        Color.Transparent,
+                                                    ),
+                                                ),
+                                            ),
+                                    )
+                                }
+                            }
+                            // Pulsing head dot riding the fill's end. It
+                            // lives outside the clipped bar so it stays
+                            // round instead of being cut to bar height.
+                            Box(
+                                Modifier.fillMaxWidth(fraction).height(8.dp),
+                                contentAlignment = Alignment.CenterEnd,
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Box(
+                                        Modifier.size(16.dp).clip(CircleShape)
+                                            .background(
+                                                IFoxyNeonOrange.copy(alpha = glowPulse),
+                                            ),
+                                    )
+                                    Box(
+                                        Modifier.size(10.dp).clip(CircleShape)
+                                            .background(Color.White),
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "${formatBytes(state.downloaded)} / ${formatBytes(total)}",
+                            color = UpdateLabel,
+                            fontSize = 13.5.sp,
+                            fontFamily = PoppinsFamily,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                if (state is UpdateUiState.Failed) {
+                    Text(
+                        state.message,
+                        color = IFoxyErrorOnDark,
+                        fontSize = 13.5.sp,
+                        fontFamily = PoppinsFamily,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    when (state) {
+                        is UpdateUiState.Available -> {
+                            TextButton(onClick = { controller.dismissDialog() }) {
+                                Text("Later", color = UpdateLabel, fontFamily = PoppinsFamily)
+                            }
+                            UpdateGradientButton("Download update") {
+                                controller.startDownload()
+                            }
+                        }
+                        is UpdateUiState.Downloading -> {
+                            TextButton(onClick = { controller.dismissDialog() }) {
+                                Text("Background", color = UpdateLabel, fontFamily = PoppinsFamily)
+                            }
+                            Button(
+                                onClick = { controller.cancelDownload() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = IFoxyYellow,
+                                    contentColor = IFoxyInk,
+                                ),
+                                shape = RoundedCornerShape(50),
+                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+                            ) {
+                                Text(
+                                    "Cancel",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = PoppinsFamily,
+                                )
+                            }
+                        }
+                        is UpdateUiState.ReadyToInstall -> {
+                            TextButton(onClick = { controller.dismissDialog() }) {
+                                Text("Later", color = UpdateLabel, fontFamily = PoppinsFamily)
+                            }
+                            UpdateGradientButton("Install") {
+                                controller.install(context)
+                            }
+                        }
+                        is UpdateUiState.Failed -> {
+                            TextButton(onClick = { controller.dismissDialog() }) {
+                                Text("OK", color = UpdateLabel, fontFamily = PoppinsFamily)
+                            }
+                        }
+                        else -> {}
+                    }
+                }
+            }
         }
+    }
+}
 
-        is UpdateUiState.ReadyToInstall -> AlertDialog(
-            onDismissRequest = { controller.dismissDialog() },
-            title = { Text("Ready to install") },
-            text = { Text("iFoxy v${state.info.version} has been downloaded.") },
-            confirmButton = {
-                TextButton(onClick = { controller.install(context) }) { Text("Install") }
-            },
-            dismissButton = {
-                TextButton(onClick = { controller.dismissDialog() }) { Text("Later") }
-            },
+@Composable
+private fun UpdateVersionCell(label: String, version: String, versionColor: Color) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            label.uppercase(),
+            color = UpdateLabel,
+            fontSize = 11.5.sp,
+            fontFamily = PoppinsFamily,
         )
-
-        is UpdateUiState.Failed -> AlertDialog(
-            onDismissRequest = { controller.dismissDialog() },
-            title = { Text("Update failed") },
-            text = { Text(state.message) },
-            confirmButton = {
-                TextButton(onClick = { controller.dismissDialog() }) { Text("OK") }
-            },
+        Text(
+            version,
+            color = versionColor,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = PoppinsFamily,
         )
+    }
+}
 
-        else -> Unit
+@Composable
+private fun UpdateGradientButton(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            contentColor = IFoxyInk,
+        ),
+        shape = RoundedCornerShape(50),
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                Brush.horizontalGradient(listOf(IFoxyNeonOrange, IFoxyYellow)),
+            ),
+    ) {
+        Text(text, fontWeight = FontWeight.SemiBold, fontFamily = PoppinsFamily)
     }
 }
