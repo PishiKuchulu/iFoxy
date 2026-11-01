@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.24 (versionCode 61) - 406 challenge-solver fix
+
+- The Fastly challenge solver now solves the challenge carried by the actual
+  HTTP 406 response (the approach upstream FoxyVPN shipped in its v1.0.8):
+  in 1.0.23 the browser sign-in succeeded on Mozilla's page, but the
+  follow-up token exchange could still be 406-blocked on flagged networks
+  because the solver fetched a fresh challenge page from the host root
+  instead of solving the one that was served.
+- Solver robustness from upstream: tries both the Mozilla VPN and a desktop
+  Chrome user agent, threads one user agent through all challenge
+  sub-requests, seeds the solver cookie jar from the app jar, and detects
+  challenge pages more reliably.
+- When the challenge cannot be solved, sign-in and Guardian calls now fail
+  with an actionable message (switch networks and try again) instead of a
+  bare "HTTP 406".
+- Fork security fix retained: challenge cookies stay under their issuing
+  domain (SEC-FX-03).
+
+
 ## 1.0.23 (versionCode 60) — browser sign-in (Mozilla anti-bot fix)
 
 Desktop ships unchanged as 0.2.3 in the same combined release;
