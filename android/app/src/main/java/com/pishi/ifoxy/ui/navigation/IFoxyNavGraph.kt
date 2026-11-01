@@ -112,6 +112,8 @@ fun IFoxyNavGraph(
                     app.accountStore.activeAccount()?.let { app.accountSwitcher.activate(it.id) }
                     navController.navigate(IFoxyRoutes.HOME) { popUpTo(IFoxyRoutes.LOGIN) { inclusive = true } }
                 },
+                onOpenSettings = { navController.navigate(IFoxyRoutes.SETTINGS) },
+                onOpenLogs = { navController.navigate(IFoxyRoutes.LOGS) },
             )
         }
         composable(IFoxyRoutes.ADD_ACCOUNT) {
@@ -125,6 +127,8 @@ fun IFoxyNavGraph(
                     navScope.launch { app.accountSwitcher.restartTunnelIfRunning() }
                     navController.popBackStack()
                 },
+                onOpenSettings = { navController.navigate(IFoxyRoutes.SETTINGS) },
+                onOpenLogs = { navController.navigate(IFoxyRoutes.LOGS) },
             )
         }
         composable(IFoxyRoutes.HOME) {
