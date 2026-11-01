@@ -1,6 +1,7 @@
 use hkdf::Hkdf;
 use sha2::Sha256;
 use thiserror::Error;
+use zeroize::Zeroize;
 
 const PROTOCOL_VERSION: &str = "identity.mozilla.com/picl/v1/";
 const PBKDF2_ROUNDS: u32 = 1000;
@@ -33,21 +34,27 @@ pub fn derive_quick_stretch(
 
 /// Derives authPW for Firefox Accounts login
 pub fn derive_auth_pw(email: &str, password: &str) -> Result<String, CryptoError> {
-    let quick_stretched = derive_quick_stretch(email, password)?;
+    let mut quick_stretched = derive_quick_stretch(email, password)?;
     let salt = [0u8; 32];
+    // Hkdf::new extracts immediately, so the stretched password can be
+    // wiped as soon as it returns (wave-3 review, M-5).
     let hk = Hkdf::<Sha256>::new(Some(&salt), &quick_stretched);
+    quick_stretched.zeroize();
     let mut okm = [0u8; HKDF_LEN];
     let info = format!("{}authPW", PROTOCOL_VERSION);
     hk.expand(info.as_bytes(), &mut okm)
         .map_err(|e| CryptoError::Kdf(format!("HKDF expand failed: {:?}", e)))?;
-    Ok(hex::encode(okm))
+    let encoded = hex::encode(okm);
+    okm.zeroize();
+    Ok(encoded)
 }
 
 /// Derives Hawk credentials (token_id, hmac_key) from sessionToken hex
 pub fn derive_hawk_credentials(session_token_hex: &str) -> Result<(String, [u8; 32]), CryptoError> {
-    let session_token = hex::decode(session_token_hex)?;
+    let mut session_token = hex::decode(session_token_hex)?;
     let salt = [0u8; 32];
     let hk = Hkdf::<Sha256>::new(Some(&salt), &session_token);
+    session_token.zeroize();
     let mut okm = [0u8; 64];
     let info = format!("{}sessionToken", PROTOCOL_VERSION);
     hk.expand(info.as_bytes(), &mut okm)
@@ -56,5 +63,7 @@ pub fn derive_hawk_credentials(session_token_hex: &str) -> Result<(String, [u8; 
     let token_id = hex::encode(&okm[0..32]);
     let mut hmac_key = [0u8; 32];
     hmac_key.copy_from_slice(&okm[32..64]);
+    // okm holds both halves of the derived credential material (M-5).
+    okm.zeroize();
     Ok((token_id, hmac_key))
 }
