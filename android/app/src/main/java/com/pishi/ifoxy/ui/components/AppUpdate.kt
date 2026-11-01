@@ -182,32 +182,91 @@ class AppUpdateController(private val appContext: Context) {
         }
         // Verify the download against the SHA-256 the GitHub API
         // reported for this asset before it is offered to the installer
-        // (external review, A6). Android's package manager would still
-        // enforce the signing certificate afterwards; the checksum is
-        // what catches a corrupted or substituted download first.
-        val expected = info.sha256
-        if (expected != null) {
-            val actual = java.security.MessageDigest.getInstance("SHA-256").let { digest ->
-                part.inputStream().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        digest.update(buffer, 0, read)
-                    }
+        // (external review, A6). The digest is REQUIRED (wave-3 review,
+        // A-1): when the API omits it, verification used to be skipped
+        // entirely and the APK went to the installer unchecked. Now a
+        // missing digest fails the update closed.
+        val expected = info.sha256 ?: run {
+            part.delete()
+            error("Update metadata carries no SHA-256 digest for this asset; refusing to install an unverified APK")
+        }
+        val actual = java.security.MessageDigest.getInstance("SHA-256").let { digest ->
+            part.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    digest.update(buffer, 0, read)
                 }
-                digest.digest().joinToString("") { "%02x".format(it) }
             }
-            if (actual != expected) {
-                part.delete()
-                error("Downloaded APK failed checksum verification (expected $expected, got $actual)")
-            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }
+        if (actual != expected) {
+            part.delete()
+            error("Downloaded APK failed checksum verification (expected $expected, got $actual)")
+        }
+        // Defense in depth (A-1): the downloaded APK's signing
+        // certificate must be the project's release certificate. The
+        // package manager would reject a foreign signer at install time
+        // anyway (an update must match the installed app's signer), but
+        // checking here fails before the user is ever prompted.
+        val signer = apkSignerSha256(appContext, part)
+        if (signer != RELEASE_CERT_SHA256) {
+            part.delete()
+            error("Downloaded APK is not signed with the iFoxy release certificate; refusing to install")
         }
         val target = File(dir, info.assetName)
         if (target.exists()) target.delete()
         check(part.renameTo(target)) { "Could not finalize the downloaded APK" }
         return target
     }
+}
+
+/**
+ * SHA-256 fingerprint of the iFoxy release signing certificate (the
+ * public fingerprint of the key every official release is signed with;
+ * it appears in every shipped APK and is not a secret).
+ */
+private const val RELEASE_CERT_SHA256 =
+    "f5381666261427b5f3c5345c79110c1aaede57b593b540d7aaa5ac481a340bee"
+
+/** SHA-256 fingerprint of an APK file's signing certificate, or null. */
+private fun apkSignerSha256(context: android.content.Context, file: File): String? {
+    val pm = context.packageManager
+    val certBytes: ByteArray? = if (android.os.Build.VERSION.SDK_INT >= 28) {
+        @Suppress("DEPRECATION")
+        val info = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            pm.getPackageArchiveInfo(
+                file.absolutePath,
+                android.content.pm.PackageManager.PackageInfoFlags.of(
+                    android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES.toLong(),
+                ),
+            )
+        } else {
+            pm.getPackageArchiveInfo(
+                file.absolutePath,
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES,
+            )
+        }
+        val signingInfo = info?.signingInfo
+        val signers = signingInfo?.apkContentsSigners
+        val cert = if (signers != null && signers.isNotEmpty()) signers[0]
+            else signingInfo?.signingCertificateHistory?.firstOrNull()
+        cert?.toByteArray()
+    } else {
+        // API 26/27: the deprecated signatures array is the only route.
+        @Suppress("DEPRECATION")
+        val info = pm.getPackageArchiveInfo(
+            file.absolutePath,
+            android.content.pm.PackageManager.GET_SIGNATURES,
+        )
+        @Suppress("DEPRECATION")
+        info?.signatures?.firstOrNull()?.toByteArray()
+    }
+    certBytes ?: return null
+    return java.security.MessageDigest.getInstance("SHA-256")
+        .digest(certBytes)
+        .joinToString("") { "%02x".format(it) }
 }
 
 @Composable
