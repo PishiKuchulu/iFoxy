@@ -190,6 +190,7 @@
       const res = await invoke('login', { email, password });
       
       if (res && res.success) {
+        loginPassword.value = '';
         if (res.needs_2fa) {
           log('Two-factor verification code required. Check your email inbox.');
           loginStepCredentials.style.display = 'none';
@@ -223,7 +224,8 @@
     setButtonLoading(btnSubmit2fa, true, 'Verifying...');
 
     try {
-      log(`Verifying 2FA code ${code}...`);
+      // Never log the code itself (wave-3 review, M-14).
+      log('Verifying 2FA code...');
       const res = await invoke('verify_2fa', { code });
 
       if (res && res.success) {
