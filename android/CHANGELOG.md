@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.26 (versionCode 63) - token exchange inside the browser page
+
+- The /oauth/token exchange after a browser sign-in now runs inside the
+  signed-in Mozilla page itself (a fetch from the page's own trusted
+  network context, Hawk-signed by the app), after both solver variants
+  proved unable to clear the Fastly challenge on some networks: the
+  challenge served to the native client could not be completed there.
+  The native exchange with the challenge solver remains as the fallback
+  when the in-page exchange is unavailable or fails.
+- Diagnostics: the head of an HTTP 406 challenge body and the in-page
+  exchange outcome are now written to the in-app log.
+
+
 ## 1.0.25 (versionCode 62) - settings and logs reachable while signed out
 
 - The sign-in gate no longer locks the user out of the rest of the app:
