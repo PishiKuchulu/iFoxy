@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.25 (versionCode 62) - settings and logs reachable while signed out
+
+- The sign-in gate no longer locks the user out of the rest of the app:
+  the sign-in screen now links to Settings and Logs, and the browser
+  sign-in error state offers "Open logs" directly. Previously a user
+  whose sign-in failed (for example the HTTP 406 case) could not reach
+  diagnostics at all, because every other screen sat behind login.
+
+
 ## 1.0.24 (versionCode 61) - 406 challenge-solver fix
 
 - The Fastly challenge solver now solves the challenge carried by the actual
