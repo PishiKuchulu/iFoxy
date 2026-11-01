@@ -472,6 +472,7 @@ async fn test_end_to_end_real_reconnect_loop_with_fake_upstream() {
             access_token: "test_token".into(),
             mode: ConnectionMode::ProxyOnly,
             token_provider: None,
+            failover_candidates: Vec::new(),
             reply: connect_tx,
         })
         .await
@@ -654,6 +655,7 @@ async fn test_cancel_during_real_reconnect_loop_preempts() {
             access_token: "test_token".into(),
             mode: ConnectionMode::ProxyOnly,
             token_provider: None,
+            failover_candidates: Vec::new(),
             reply: connect_tx,
         })
         .await

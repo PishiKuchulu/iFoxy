@@ -18,6 +18,18 @@ fn packet_with(ihl_words: u8, total_length: u16, buf_len: usize) -> Vec<u8> {
     buf[9] = 6; // TCP
     buf[12..16].copy_from_slice(&[10, 0, 0, 1]);
     buf[16..20].copy_from_slice(&[10, 0, 0, 2]);
+    // Wave-3 H-5: parse verifies the header checksum, so the fixture
+    // must carry a real one (one's-complement sum over the header
+    // with the checksum field itself zeroed).
+    let ihl_bytes = (ihl_words as usize) * 4;
+    let mut sum: u32 = 0;
+    for i in (0..ihl_bytes).step_by(2) {
+        sum += u16::from_be_bytes([buf[i], buf[i + 1]]) as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    buf[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
     buf
 }
 

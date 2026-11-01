@@ -46,6 +46,7 @@ fn test_syn_ack_mss_option_clamping() {
         2000,
         65535,
         VPN_TCP_MSS,
+        None,
     );
 
     // Total length: 20 IP + 24 TCP = 44 bytes

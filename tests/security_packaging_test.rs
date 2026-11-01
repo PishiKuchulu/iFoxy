@@ -47,8 +47,8 @@ fn test_safe_dll_search_and_single_instance() {
     enforce_safe_dll_search();
 
     // Verify single instance mutex
-    let mutex_1 = check_single_instance("Global\\iFoxy_Test_Instance_Mutex");
-    assert!(mutex_1, "First instance must succeed");
+    let guard_1 = acquire_single_instance("Global\\iFoxy_Test_Instance_Mutex");
+    assert!(guard_1.is_some(), "First instance must succeed");
 }
 
 #[cfg(windows)]
