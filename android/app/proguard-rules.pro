@@ -27,3 +27,13 @@
 -dontwarn com.google.errorprone.annotations.**
 
 -dontwarn reactor.blockhound.**
+
+# Browser sign-in: the WebView reaches the WebChannel bridge
+# reflectively through its JavascriptInterface name; keep the bridge
+# and every @JavascriptInterface method unobfuscated.
+-keepattributes JavascriptInterface, *Annotation*
+
+-keep class com.pishi.ifoxy.ui.screens.WebChannelBridge { *; }
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
