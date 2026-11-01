@@ -41,16 +41,6 @@ class TokenStore(context: Context) {
 
     fun hasRefreshToken(): Boolean = loadAuth()?.refreshToken != null
 
-    var pendingSessionToken: String?
-        get() = prefs.getString(KEY_PENDING_SESSION_TOKEN, null)?.takeIf { it.isNotBlank() }
-        set(value) {
-            if (value != null) {
-                prefs.edit().putString(KEY_PENDING_SESSION_TOKEN, value).apply()
-            } else {
-                prefs.edit().remove(KEY_PENDING_SESSION_TOKEN).apply()
-            }
-        }
-
     /** Email of the in-progress sign-in (multi-account vault bookkeeping);
      *  set at login start, consumed when the login completes. */
     var pendingLoginEmail: String?
@@ -71,7 +61,6 @@ class TokenStore(context: Context) {
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT = "expires_at"
-        private const val KEY_PENDING_SESSION_TOKEN = "pending_session_token"
         private const val KEY_PENDING_LOGIN_EMAIL = "pending_login_email"
 
         private const val CLOCK_SKEW_TOLERANCE_SECONDS = 60L

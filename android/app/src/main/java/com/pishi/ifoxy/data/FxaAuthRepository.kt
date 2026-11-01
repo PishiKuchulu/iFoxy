@@ -28,6 +28,13 @@ enum class SessionStatus {
 
 class FxaApiError(message: String, val errno: Int?, val statusCode: Int?) : Exception(message)
 
+val FxaApiError.isUnconfirmedSession: Boolean
+    get() = errno == 104 || (statusCode == 400 && message?.contains("Unconfirmed session", ignoreCase = true) == true)
+
+fun Throwable.isUnconfirmedSession(): Boolean =
+    (this as? FxaApiError)?.isUnconfirmedSession == true ||
+        message?.contains("Unconfirmed session", ignoreCase = true) == true
+
 class FxaRefreshFailure(
     message: String,
     val permanent: Boolean,
@@ -38,13 +45,16 @@ private const val FXA_AUTH_SERVER = "https://api.accounts.firefox.com/v1"
 private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
 private const val PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/"
-private const val PBKDF2_ROUNDS = 1000
-private const val STRETCHED_PW_LEN = 32
-private const val HKDF_LEN = 32
-private const val VERIFICATION_METHOD_EMAIL_2FA = "email-2fa"
-private const val FXA_ERRNO_INVALID_PARAMETER = 107
 private const val FXA_MAX_CHALLENGE_ATTEMPTS = 5
 private const val DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60
+
+/** The FxA sign-in page in its WebChannel ("browser") context: after a
+ *  successful sign-in the page posts the session token to the embedding
+ *  browser via WebChannel, which the browser sign-in screen captures. */
+private const val WEBCHANNEL_LOGIN_URL =
+    "https://accounts.firefox.com/?context=fx_desktop_v3&service=sync&action=email"
+
+private val SESSION_TOKEN_HEX = Regex("^[0-9a-f]{64}$")
 
 private val jsonMediaType = "application/json".toMediaType()
 
@@ -53,49 +63,30 @@ class FxaAuthRepository(
     private val challengeSolver: FastlyChallengeSolver = FastlyChallengeSolver(ControlPlaneHttp.cookieJar),
     private val accountStore: AccountStore? = null,
 ) {
-    var pendingSessionToken: String?
-        get() = tokenStore.pendingSessionToken
-        set(value) { tokenStore.pendingSessionToken = value }
-
-    fun clearPendingSession() {
-        tokenStore.pendingSessionToken = null
-    }
-
     companion object {
         fun normalizeEmail(email: String): String =
             email.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim().lowercase()
-
-        fun sanitizeCode(code: String): String =
-            code.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim()
     }
 
-    suspend fun startLogin(email: String, password: String): Result<Boolean> = runCatching {
-        val cleanEmail = normalizeEmail(email)
-        // Multi-account: stash the outgoing account's freshest tokens in
-        // the vault before this sign-in replaces the live session, and
-        // remember whose login this is so completion can file it.
-        accountStore?.harvestFrom(tokenStore)
-        tokenStore.pendingLoginEmail = cleanEmail
-        val data = loginAttempt(cleanEmail, password)
-        val sessionToken = data.getString("sessionToken")
-        pendingSessionToken = sessionToken
-        val verified = data.optBoolean("verified", false)
-        if (!verified) {
-            true
-        } else {
-            completeLogin(sessionToken)
-            clearPendingSession()
-            false
+    /** The official FxA page the in-app browser sign-in starts from. */
+    fun getBrowserLoginUrl(): String = WEBCHANNEL_LOGIN_URL
+
+    /**
+     * Finish a browser sign-in. The WebChannel bridge captured the
+     * session token from Mozilla's own page — where the user entered
+     * their password and any verification code, neither of which ever
+     * touches this app — and the rest of the flow is the same
+     * session-to-OAuth exchange the old password login ended with.
+     */
+    suspend fun completeBrowserLogin(sessionToken: String): Result<Unit> = runCatching {
+        val clean = sessionToken.trim().replace(Regex("[\\s\"]"), "").lowercase()
+        if (!SESSION_TOKEN_HEX.matches(clean)) {
+            error("The sign-in page did not hand over a usable session token")
         }
-    }
-
-    suspend fun submitTwoFactorCode(code: String): Result<Boolean> = runCatching {
-        val cleanCode = sanitizeCode(code)
-        val sessionToken = pendingSessionToken ?: error("No pending FxA session. Start sign-in again.")
-        fxaDo("POST", "/session/verify_code", sessionToken = sessionToken, jsonBody = JSONObject().put("code", cleanCode))
-        completeLogin(sessionToken)
-        clearPendingSession()
-        false
+        // Multi-account: stash the outgoing account's freshest tokens in
+        // the vault before this sign-in replaces the live session.
+        accountStore?.harvestFrom(tokenStore)
+        completeLogin(clean)
     }
 
     suspend fun restoreSession(): SessionStatus {
@@ -215,14 +206,21 @@ class FxaAuthRepository(
         )
         tokenStore.saveAuth(auth)
         // File the account in the multi-account vault (it becomes active).
-        val loginEmail = tokenStore.pendingLoginEmail
+        // The browser sign-in never learns the email upfront, so when no
+        // login email is pending, ask the FxA profile endpoint whose
+        // account this session belongs to. Best effort: the live session
+        // above is valid either way, and the startup migration files
+        // unfiled sessions the same way.
         val vault = accountStore
-        if (vault != null && loginEmail != null) {
-            runCatching { vault.upsert(loginEmail, auth) }
-                .onFailure { AppLogger.w(TAG, "could not file the account in the vault", it) }
+        if (vault != null) {
+            val loginEmail = tokenStore.pendingLoginEmail
+                ?: runCatching { fetchAccountEmail() }.getOrNull()
+            if (loginEmail != null) {
+                runCatching { vault.upsert(loginEmail, auth) }
+                    .onFailure { AppLogger.w(TAG, "could not file the account in the vault", it) }
+            }
         }
         tokenStore.pendingLoginEmail = null
-        clearPendingSession()
     }
 
     /** The signed-in account's email, from the FxA profile endpoint.
@@ -239,23 +237,6 @@ class FxaAuthRepository(
             val text = resp.body?.string().orEmpty()
             runCatching { JSONObject(text).optString("email") }.getOrNull()
                 ?.takeIf { it.isNotBlank() }
-        }
-    }
-
-    private suspend fun loginAttempt(email: String, password: String, withVerificationMethod: Boolean = true): JSONObject {
-        val body = JSONObject().apply {
-            put("email", email)
-            put("authPW", deriveAuthPw(email, password))
-            if (withVerificationMethod) put("verificationMethod", VERIFICATION_METHOD_EMAIL_2FA)
-        }
-        return try {
-            fxaDo("POST", "/account/login", jsonBody = body)
-        } catch (e: FxaApiError) {
-            if (e.errno == FXA_ERRNO_INVALID_PARAMETER && withVerificationMethod) {
-                loginAttempt(email, password, withVerificationMethod = false)
-            } else {
-                throw e
-            }
         }
     }
 
@@ -319,16 +300,6 @@ class FxaAuthRepository(
             if (text.isEmpty()) return@withContext JSONObject()
             return@withContext JSONObject(text)
         }
-    }
-
-    private fun deriveQuickStretch(email: String, password: String): ByteArray {
-        val salt = "${PROTOCOL_VERSION}quickStretch:$email".toByteArray(Charsets.UTF_8)
-        return pbkdf2HmacSha256(password.toByteArray(Charsets.UTF_8), salt, PBKDF2_ROUNDS, STRETCHED_PW_LEN)
-    }
-
-    private fun deriveAuthPw(email: String, password: String): String {
-        val quickStretched = deriveQuickStretch(email, password)
-        return hkdf(quickStretched, "${PROTOCOL_VERSION}authPW", HKDF_LEN).toHex()
     }
 
     private fun deriveHawkCredentials(sessionTokenHex: String): Pair<String, ByteArray> {
