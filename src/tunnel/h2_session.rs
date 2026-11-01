@@ -5,7 +5,7 @@ use h2::PingPong;
 use http::{Method, Request, StatusCode, Uri};
 use rustls::RootCertStore;
 use rustls_pki_types::ServerName;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 use tokio::sync::Mutex as TokioMutex;
@@ -142,7 +142,7 @@ impl H2UpstreamSession {
     }
 
     pub fn current_token(&self) -> String {
-        self.token.read().unwrap().clone()
+        self.token.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn update_token(&self, new_token: &str) {
@@ -339,22 +339,12 @@ impl H2UpstreamSession {
         })
     }
 
-    pub async fn connect(
-        edge_host: &str,
-        edge_port: u16,
-        bearer_token: &str,
-    ) -> Result<Self, TunnelError> {
-        let addr_str = format!("{}:{}", edge_host, edge_port);
-        let socket_addr = addr_str
-            .to_socket_addrs()
-            .map_err(|e| TunnelError::DnsResolution(e.to_string()))?
-            .next()
-            .ok_or_else(|| {
-                TunnelError::DnsResolution(format!("No address found for {}", edge_host))
-            })?;
-
-        Self::connect_addr(socket_addr, edge_host, bearer_token).await
-    }
+    // (A former `connect(host, port, token)` constructor was removed in
+    // the wave-3 fixes, H-8: it resolved DNS with the BLOCKING
+    // `to_socket_addrs()` inside async code and took only the first
+    // address. It had no callers \u2014 production connects through
+    // `connect_addr_with_supervision_and_roots` with an address resolved
+    // by EdgeResolver off the async runtime.)
 
     pub async fn open_stream(
         &self,
