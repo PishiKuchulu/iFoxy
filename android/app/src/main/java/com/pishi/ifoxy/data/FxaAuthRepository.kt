@@ -45,6 +45,12 @@ class FxaRefreshFailure(
  *  on this network; the message is user-facing and actionable. */
 class FastlyBlockedException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** A fully-formed, Hawk-signed FxA /oauth/token request that a real
+ *  browser context can execute on the app's behalf (see the browser
+ *  sign-in screen: the page's network stack already passed Mozilla's
+ *  bot protection, the native HTTP client has not). */
+class BrowserTokenRequest(val url: String, val authorization: String, val bodyJson: String)
+
 private const val FXA_AUTH_SERVER = "https://api.accounts.firefox.com/v1"
 private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
@@ -86,7 +92,10 @@ class FxaAuthRepository(
      * touches this app — and the rest of the flow is the same
      * session-to-OAuth exchange the old password login ended with.
      */
-    suspend fun completeBrowserLogin(sessionToken: String): Result<Unit> = runCatching {
+    suspend fun completeBrowserLogin(
+        sessionToken: String,
+        preExchangedToken: JSONObject? = null,
+    ): Result<Unit> = runCatching {
         val clean = sessionToken.trim().replace(Regex("[\\s\"]"), "").lowercase()
         if (!SESSION_TOKEN_HEX.matches(clean)) {
             error("The sign-in page did not hand over a usable session token")
@@ -94,7 +103,7 @@ class FxaAuthRepository(
         // Multi-account: stash the outgoing account's freshest tokens in
         // the vault before this sign-in replaces the live session.
         accountStore?.harvestFrom(tokenStore)
-        completeLogin(clean)
+        completeLogin(clean, preExchangedToken)
     }
 
     suspend fun restoreSession(): SessionStatus {
@@ -205,8 +214,12 @@ class FxaAuthRepository(
         return System.currentTimeMillis() / 1000 + expiresIn
     }
 
-    private suspend fun completeLogin(sessionToken: String) {
-        val tokenData = oauthToken(sessionToken)
+    private suspend fun completeLogin(sessionToken: String, preExchangedToken: JSONObject? = null) {
+        // A token response produced inside the signed-in browser page
+        // wins over the native exchange; a malformed one falls back.
+        val tokenData = preExchangedToken
+            ?.takeIf { it.optString("access_token").isNotBlank() }
+            ?: oauthToken(sessionToken)
         val auth = RuntimeAuth(
             accessToken = tokenData.getString("access_token"),
             refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
@@ -248,14 +261,30 @@ class FxaAuthRepository(
         }
     }
 
+    private fun oauthTokenBody(): JSONObject = JSONObject().apply {
+        put("client_id", FIREFOX_CLIENT_ID)
+        put("grant_type", "fxa-credentials")
+        put("scope", OAUTH_SCOPE)
+        put("access_type", "offline")
+    }
+
     private suspend fun oauthToken(sessionToken: String): JSONObject {
-        val body = JSONObject().apply {
-            put("client_id", FIREFOX_CLIENT_ID)
-            put("grant_type", "fxa-credentials")
-            put("scope", OAUTH_SCOPE)
-            put("access_type", "offline")
-        }
-        return fxaDo("POST", "/oauth/token", sessionToken = sessionToken, jsonBody = body)
+        return fxaDo("POST", "/oauth/token", sessionToken = sessionToken, jsonBody = oauthTokenBody())
+    }
+
+    /** Builds the Hawk-signed /oauth/token request for [sessionToken]
+     *  so the signed-in browser page can execute it in its own trusted
+     *  network context instead of the native client. */
+    fun buildBrowserTokenRequest(sessionToken: String): BrowserTokenRequest {
+        val body = oauthTokenBody()
+        val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
+        val url = "$FXA_AUTH_SERVER/oauth/token".toHttpUrl()
+        val (tokenId, hmacKey) = deriveHawkCredentials(sessionToken)
+        return BrowserTokenRequest(
+            url = url.toString(),
+            authorization = hawkHeader("POST", url, tokenId, hmacKey, bodyBytes),
+            bodyJson = body.toString(),
+        )
     }
 
     private suspend fun fxaDo(
@@ -293,6 +322,7 @@ class FxaAuthRepository(
             // block on flagged networks (upstream v1.0.8 finding, verified
             // on-device against iFoxy 1.0.23).
             val challengedBody = response.use { it.body?.string().orEmpty() }
+            AppLogger.w(TAG, "HTTP 406 on $path; challenge body head: ${challengedBody.take(240)}")
             try {
                 challengeSolver.solveAndInstall(challengedBody, origin)
             } catch (cancellation: CancellationException) {
