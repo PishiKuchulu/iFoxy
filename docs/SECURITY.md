@@ -83,7 +83,17 @@ iFoxy runs on Windows as a native client providing Layer 3 transit tunneling and
   - Every network modification (route addition, proxy change, WFP filter) is serialized to `%APPDATA%\iFoxy\recovery_journal.json` and flushed to disk **prior** to executing the system API call.
 - **Startup Replay:**
   - On process initialization, `RecoveryJournal::recover_if_dirty()` checks for uncommitted journal entries from prior crashes and rolls them back in reverse order before initializing the VPN service.
+  - Since wave 3 (C-1), restores whose failure leaves the machine in a broken state (system proxy, recorded kill-switch filters, resolv.conf) are hard failures: recovery returns an error, startup refuses, and the journal file is kept so the next start retries instead of the leftover state becoming permanent and invisible.
+- **Journal Content Is Untrusted Input (C-2):**
+  - The journal lives in the user's config directory, writable by any same-user process. Its recorded `/etc/resolv.conf` contents are therefore validated line by line (only the directive shapes a real resolv.conf uses, 64 KiB cap) before the elevated process writes them back; invalid content fails recovery and is never written.
 
 ### 2.7 Single Unified Crypto Provider (H6)
 - The entire crate and its dependency tree rely solely on `ring` (`0 aws-lc-rs`).
 - `webpki-roots` provides the Mozilla root CA certificate store for TLS validation across all HTTP clients.
+
+### 2.8 Known Trade-offs & Residuals (wave 3)
+
+- **Local proxy has no authentication (H-3).** On desktop the SOCKS5 listener binds `127.0.0.1` only; the address is hardcoded, not configurable, so no other machine can reach it. Any local process can use it — the same trust boundary as every local proxy. Adding SOCKS5 credentials was rejected: the feature exists to serve as the OS system proxy, and neither Windows nor GNOME proxy settings can present per-connection credentials. Android's optional non-loopback bind stays opt-in behind an explicit risk confirmation and a startup warning.
+- **Elevated process state lives in the user profile (C-3 residual).** The FxA session, recovery journal and logs live under the user's config/home directories even though the process runs elevated. This is deliberate: the session belongs to the user, and moving it under a system directory would break per-user sign-out and DPAPI binding. System *tools* are resolved by absolute path (wave 3), so a writable home cannot redirect which binaries run; what a same-user attacker could still tamper with is data, and the one data file the elevated process acts on with privilege — the recovery journal's resolv.conf backup — is validated before use (§2.6).
+- **pkexec environment passthrough (C-3 residual).** `HOME`, `XDG_*`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS` are passed through pkexec on purpose: without them the elevated GUI cannot reach the user's display or session bus. The alternative (a split UI/service model) is the tracked redesign, not a patch.
+- **Tunnel DNS endpoint (H-7 residual).** DNS queries inside the tunnel go to a fixed public resolver (1.1.1.1) reached *through* the tunnel. The wave-3 fixes bound its cache correctness (upstream TTLs, concurrency cap); the endpoint choice itself is a product decision — the Guardian service does not publish a resolver address for clients to use instead.

@@ -6,21 +6,24 @@ This document outlines the automated test suite and manual verification procedur
 
 ## 1. Automated Test Suite
 
-The test suite consists of **121 test functions across 31 test files**
-in `tests/` (attribute count, 2026-10-25). Counts by platform differ
+The test suite consists of **128 test functions across 32 test files**
+in `tests/` (attribute count, 2026-11-01). Counts by platform differ
 because some tests are platform-gated (Windows-only WFP/DNS tests,
-Linux-only backend tests) and 5 tests are `#[ignore]`d (admin/root
-required: 3 WFP, 1 Linux TUN, 1 destructive DNS).
+Linux-only backend tests) and 6 tests are `#[ignore]`d (admin/root
+required: 3 WFP, 1 Linux TUN, 2 destructive DNS).
 
 ### Running the Full Test Suite
 ```powershell
 cargo test
 ```
-**Observed Summary (Linux, 2026-10-25, rustc 1.99.1, this tree):**
-`112 passed; 0 failed; 1 ignored` (the ignored test requires root for
-a real TUN device). Earlier versions of this document quoted 99 tests
-/ 27 targets and docs/FIX_TRACKER.md quoted 107 / 27 — both stale;
-do not quote those numbers as current.
+**Observed Summary (Linux, 2026-11-01, rustc 1.99.1, this tree):**
+`119 passed; 0 failed; 1 ignored` (the ignored test requires root for
+a real TUN device). The 5000-flow netstack stress test is load
+sensitive under full-suite parallelism and has flaked once in this
+environment (it passes in isolation and on re-run; the same flake
+was A/B-proven pre-existing in the wave-1 tree). Earlier versions of
+this document quoted 99 tests / 27 targets, 107 / 27 and 121 / 31 —
+all stale; do not quote those numbers as current.
 
 > Kill-switch wording note: the WFP tests below are filter-API
 > read-back (install real filters, read them back via
