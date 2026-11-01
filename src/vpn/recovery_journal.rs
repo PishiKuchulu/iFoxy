@@ -13,6 +13,111 @@ pub enum JournalError {
     Io(#[from] std::io::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// One or more recorded state restores failed during crash recovery.
+    /// The journal file is KEPT so the next start retries; main.rs treats
+    /// this like any other recovery error and refuses to start (wave-3
+    /// review, C-1).
+    #[error("Crash recovery incomplete: {0}")]
+    RecoveryIncomplete(String),
+}
+
+/// Validate journal-supplied /etc/resolv.conf content before the elevated
+/// process writes it back (wave-3 review, C-2).
+///
+/// The recovery journal lives in the user's config directory, which any
+/// same-user process can write. Without validation, a tampered journal
+/// could make the root process install attacker-chosen DNS servers (or
+/// arbitrary file content) at /etc/resolv.conf. Only the line shapes a
+/// real resolv.conf uses are accepted: blank lines, comments, and
+/// `nameserver <IP>`, `search <domains…>`, `domain <domain>`,
+/// `options <tokens…>`, `sortlist <ip[/mask]…>` directives.
+pub fn validate_resolv_conf_backup(content: &str) -> Result<(), String> {
+    fn is_domain_token(tok: &str) -> bool {
+        !tok.is_empty()
+            && tok.len() <= 253
+            && !tok.starts_with('-')
+            && tok
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+    }
+    fn is_option_token(tok: &str) -> bool {
+        !tok.is_empty()
+            && tok.len() <= 64
+            && !tok.starts_with('-')
+            && tok
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+    }
+
+    if content.len() > 64 * 1024 {
+        return Err("resolv.conf backup exceeds 64 KiB".to_string());
+    }
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("nameserver") => {
+                let addr = parts
+                    .next()
+                    .ok_or_else(|| format!("line {line_no}: nameserver without an address"))?;
+                if addr.parse::<std::net::IpAddr>().is_err() {
+                    return Err(format!("line {line_no}: invalid nameserver address"));
+                }
+                if parts.next().is_some() {
+                    return Err(format!("line {line_no}: trailing data after nameserver"));
+                }
+            }
+            Some("search") => {
+                let domains: Vec<&str> = parts.collect();
+                if domains.is_empty() || !domains.iter().all(|d| is_domain_token(d)) {
+                    return Err(format!("line {line_no}: invalid search directive"));
+                }
+            }
+            Some("domain") => {
+                let domain = parts
+                    .next()
+                    .ok_or_else(|| format!("line {line_no}: domain without a value"))?;
+                if !is_domain_token(domain) || parts.next().is_some() {
+                    return Err(format!("line {line_no}: invalid domain directive"));
+                }
+            }
+            Some("options") => {
+                let opts: Vec<&str> = parts.collect();
+                if opts.is_empty() || !opts.iter().all(|o| is_option_token(o)) {
+                    return Err(format!("line {line_no}: invalid options directive"));
+                }
+            }
+            Some("sortlist") => {
+                let nets: Vec<&str> = parts.collect();
+                let ok = !nets.is_empty()
+                    && nets.iter().all(|n| {
+                        let mut it = n.split('/');
+                        let ip_ok = it
+                            .next()
+                            .map(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+                            .unwrap_or(false);
+                        let mask_ok = match it.next() {
+                            None => true,
+                            Some(m) => m.parse::<std::net::IpAddr>().is_ok(),
+                        };
+                        ip_ok && mask_ok && it.next().is_none()
+                    });
+                if !ok {
+                    return Err(format!("line {line_no}: invalid sortlist directive"));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "line {line_no}: disallowed resolv.conf directive"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,6 +336,17 @@ impl RecoveryJournal {
         let data = fs::read(path)?;
         let state: JournalState = serde_json::from_slice(&data)?;
 
+        // Restores whose failure leaves the machine in a broken or unsafe
+        // state (kill switch still blocking traffic, proxy still pointing
+        // at a dead listener, DNS still pointing at a dead interface) are
+        // HARD failures (wave-3 review, C-1): the journal is kept and the
+        // error propagates, so startup refuses to continue — silently
+        // deleting the journal used to destroy the only record of the
+        // leftover state. Route deletions stay best-effort with loud
+        // logging: a stale route toward a dead tunnel gateway is
+        // self-limiting and must not brick startup.
+        let mut hard_failures: Vec<String> = Vec::new();
+
         // 1. Revert all installed VPN routes
         for entry in &state.installed_routes {
             tracing::info!(
@@ -238,7 +354,14 @@ impl RecoveryJournal {
                 entry.route.destination,
                 entry.route.prefix_len
             );
-            let _ = backend.delete_route(&entry.route, entry.if_index);
+            if let Err(e) = backend.delete_route(&entry.route, entry.if_index) {
+                tracing::warn!(
+                    "Recovery: failed to delete route {}/{}: {}",
+                    entry.route.destination,
+                    entry.route.prefix_len,
+                    e
+                );
+            }
         }
 
         // 2. Revert edge bypass route using physical_if_idx
@@ -249,13 +372,17 @@ impl RecoveryJournal {
                 gateway: entry.physical_gw,
                 metric: 1,
             };
-            let _ = backend.delete_route(&edge_route, entry.physical_if_idx);
+            if let Err(e) = backend.delete_route(&edge_route, entry.physical_if_idx) {
+                tracing::warn!("Recovery: failed to delete edge bypass route: {}", e);
+            }
         }
 
         // 3. Revert system proxy settings
         if let Some(ref backup) = state.proxy_backup {
             tracing::info!("Replaying proxy restore from journal backup");
-            let _ = backend.restore_system_proxy(Some(backup));
+            if let Err(e) = backend.restore_system_proxy(Some(backup)) {
+                hard_failures.push(format!("system proxy restore failed: {e}"));
+            }
         }
 
         // 4. Revert any persistent kill-switch state (R-8, R-9): WFP
@@ -268,20 +395,59 @@ impl RecoveryJournal {
                 state.wfp_filters.len()
             );
             let fw = crate::vpn::killswitch::platform_firewall_backend();
-            let _ = fw.remove_kill_switch(&state.wfp_filters);
+            if let Err(e) = fw.remove_kill_switch(&state.wfp_filters) {
+                hard_failures.push(format!("kill-switch removal failed: {e}"));
+            }
+        }
+
+        // 4b. Linux only: sweep for a persistent iptables chain even when
+        // the journal recorded no filters (a crash between installing the
+        // chain and journaling it, or a manually truncated journal). The
+        // removal is idempotent — it also runs before every fresh install.
+        // Best-effort: on a machine without iptables no chain can exist.
+        #[cfg(target_os = "linux")]
+        if state.wfp_filters.is_empty() {
+            let fw = crate::vpn::killswitch::platform_firewall_backend();
+            if let Err(e) = fw.remove_kill_switch(&[]) {
+                tracing::warn!(
+                    "Recovery: best-effort stale kill-switch sweep failed: {}",
+                    e
+                );
+            }
         }
 
         // 5. Restore a rewritten /etc/resolv.conf (Linux TUN DNS
         // fallback): a crash between the rewrite and the device Drop
         // otherwise leaves DNS pointing at a dead interface forever.
+        // The content comes from the user-writable journal, so it is
+        // validated before the elevated process writes it (C-2).
         if let Some(ref original) = state.resolv_conf_backup {
             tracing::info!("Replaying resolv.conf restore from journal backup");
-            if let Err(e) = fs::write("/etc/resolv.conf", original) {
-                tracing::warn!("Failed to restore /etc/resolv.conf from journal: {}", e);
+            match validate_resolv_conf_backup(original) {
+                Ok(()) => {
+                    if let Err(e) = fs::write("/etc/resolv.conf", original) {
+                        hard_failures.push(format!("resolv.conf restore failed: {e}"));
+                    }
+                }
+                Err(reason) => {
+                    hard_failures.push(format!(
+                        "resolv.conf backup rejected by validation ({reason}); not written"
+                    ));
+                }
             }
         }
 
-        // 6. Remove dirty journal file
+        // 6. Remove the dirty journal file ONLY when every hard restore
+        // succeeded. Otherwise keep it (the next start retries) and fail.
+        if !hard_failures.is_empty() {
+            let summary = hard_failures.join("; ");
+            tracing::error!(
+                "Crash recovery INCOMPLETE: {}. Journal kept at {:?} for the next start.",
+                summary,
+                path
+            );
+            return Err(JournalError::RecoveryIncomplete(summary));
+        }
         let _ = fs::remove_file(path);
         tracing::info!("Crash recovery completed successfully. Journal removed.");
 

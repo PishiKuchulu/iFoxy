@@ -55,6 +55,15 @@ pub fn calculate_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// Next IPv4 identification value for locally built packets. A global
+/// counter replaces the old per-builder constants (0x4242 / 0x1111 /
+/// 0x9999), which made every packet from this host share one ID — a
+/// fingerprint and a uniqueness violation (wave-3 review, L-5/H-7).
+pub fn next_ip_identification() -> u16 {
+    static NEXT_ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+    NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn calculate_transport_checksum(
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -119,6 +128,20 @@ impl Ipv4Header {
         let src_ip = Ipv4Addr::new(buf[12], buf[13], buf[14], buf[15]);
         let dst_ip = Ipv4Addr::new(buf[16], buf[17], buf[18], buf[19]);
 
+        // Fragmented packets are dropped (wave-3 review, H-5): this
+        // netstack has no reassembly, so a fragment (MF set or a nonzero
+        // offset) would be misparsed as a complete packet. DF (0x4000)
+        // remains fine.
+        if flags_fragment & 0x2000 != 0 || flags_fragment & 0x1FFF != 0 {
+            return None;
+        }
+        // Verify the IPv4 header checksum: a valid header's words,
+        // checksum field included, fold to all-ones, so the complement
+        // checksum over it is zero.
+        if calculate_checksum(&buf[..ihl as usize]) != 0 {
+            return None;
+        }
+
         let payload_len = (total_length as usize) - (ihl as usize);
         let payload = &buf[(ihl as usize)..(ihl as usize) + payload_len];
 
@@ -139,7 +162,11 @@ impl Ipv4Header {
     }
 
     pub fn serialize_into(&self, buf: &mut [u8]) {
-        buf[0] = 0x45; // Version 4, IHL 5 (20 bytes)
+        // Honor the header's own IHL instead of hardcoding 20 bytes
+        // (wave-3 review, L-5). All in-tree constructors use ihl = 20,
+        // where this is byte-identical to the old behavior.
+        let ihl = (self.ihl as usize).max(IPV4_HEADER_MIN_LEN);
+        buf[0] = 0x40 | ((ihl / 4) as u8 & 0x0F); // Version 4 + IHL
         buf[1] = 0x00; // DSCP / ECN
         buf[2..4].copy_from_slice(&self.total_length.to_be_bytes());
         buf[4..6].copy_from_slice(&self.identification.to_be_bytes());
@@ -150,7 +177,7 @@ impl Ipv4Header {
         buf[12..16].copy_from_slice(&self.src_ip.octets());
         buf[16..20].copy_from_slice(&self.dst_ip.octets());
 
-        let csum = calculate_checksum(&buf[..20]);
+        let csum = calculate_checksum(&buf[..ihl.min(buf.len())]);
         buf[10..12].copy_from_slice(&csum.to_be_bytes());
     }
 }
@@ -166,6 +193,10 @@ pub struct TcpHeader {
     pub window_size: u16,
     pub checksum: u16,
     pub urgent_ptr: u16,
+    /// Window Scale option (RFC 7323) when present in the header's
+    /// options, clamped to the protocol maximum of 14 (wave-3 review,
+    /// H-6). Only meaningful on SYN packets.
+    pub window_scale: Option<u8>,
 }
 
 impl TcpHeader {
@@ -187,6 +218,33 @@ impl TcpHeader {
         let urgent_ptr = u16::from_be_bytes([buf[18], buf[19]]);
         let payload = &buf[(data_offset as usize)..];
 
+        // Scan the options for the Window Scale option (kind 3). Any
+        // malformed option simply stops the scan.
+        let mut window_scale = None;
+        if (data_offset as usize) > TCP_HEADER_MIN_LEN {
+            let opts = &buf[TCP_HEADER_MIN_LEN..data_offset as usize];
+            let mut i = 0usize;
+            while i < opts.len() {
+                match opts[i] {
+                    0 => break, // End of options
+                    1 => i += 1, // NOP
+                    kind => {
+                        if i + 1 >= opts.len() {
+                            break;
+                        }
+                        let len = opts[i + 1] as usize;
+                        if len < 2 || i + len > opts.len() {
+                            break;
+                        }
+                        if kind == 3 && len == 3 {
+                            window_scale = Some(opts[i + 2].min(14));
+                        }
+                        i += len;
+                    }
+                }
+            }
+        }
+
         Some((
             Self {
                 src_port,
@@ -198,6 +256,7 @@ impl TcpHeader {
                 window_size,
                 checksum,
                 urgent_ptr,
+                window_scale,
             },
             payload,
         ))
@@ -241,9 +300,12 @@ pub fn build_tcp_syn_ack_packet(
     ack: u32,
     window_size: u16,
     mss: u16,
+    window_scale: Option<u8>,
 ) -> Vec<u8> {
     let ip_hdr_len = 20usize;
-    let tcp_hdr_len = 24usize; // 20 bytes TCP + 4 bytes MSS option
+    // 20 bytes TCP + 4 bytes MSS option, plus 4 more (NOP + Window
+    // Scale) when scaling was negotiated (wave-3 review, H-6).
+    let tcp_hdr_len = if window_scale.is_some() { 28 } else { 24 };
     let total_len = ip_hdr_len + tcp_hdr_len;
 
     let mut packet = vec![0u8; total_len];
@@ -251,7 +313,7 @@ pub fn build_tcp_syn_ack_packet(
     let ip_hdr = Ipv4Header {
         ihl: 20,
         total_length: total_len as u16,
-        identification: 0x4242,
+        identification: next_ip_identification(),
         flags_fragment: 0x4000, // Don't fragment
         ttl: 64,
         protocol: PROTOCOL_TCP,
@@ -266,17 +328,25 @@ pub fn build_tcp_syn_ack_packet(
     packet[41] = 0x04;
     packet[42] = (mss >> 8) as u8;
     packet[43] = (mss & 0xFF) as u8;
+    if let Some(shift) = window_scale {
+        // NOP (align) + Window Scale (Kind=3, Len=3, Value=shift)
+        packet[44] = 0x01;
+        packet[45] = 0x03;
+        packet[46] = 0x03;
+        packet[47] = shift.min(14);
+    }
 
     let tcp_hdr = TcpHeader {
         src_port,
         dst_port,
         seq,
         ack,
-        data_offset: 24,
+        data_offset: tcp_hdr_len as u8,
         flags: TCP_FLAG_SYN | TCP_FLAG_ACK,
         window_size,
         checksum: 0,
         urgent_ptr: 0,
+        window_scale,
     };
     tcp_hdr.serialize_into(&mut packet[20..], src_ip, dst_ip, &[]);
 
@@ -304,7 +374,7 @@ pub fn build_tcp_packet(
     let ip_hdr = Ipv4Header {
         ihl: 20,
         total_length: total_len as u16,
-        identification: 0x4242,
+        identification: next_ip_identification(),
         flags_fragment: 0x4000, // Don't fragment
         ttl: 64,
         protocol: PROTOCOL_TCP,
@@ -324,6 +394,7 @@ pub fn build_tcp_packet(
         window_size,
         checksum: 0,
         urgent_ptr: 0,
+        window_scale: None,
     };
     tcp_hdr.serialize_into(&mut packet[20..], src_ip, dst_ip, payload);
 
@@ -348,7 +419,7 @@ pub fn build_icmp_port_unreachable(router_ip: Ipv4Addr, original_packet: &[u8]) 
     let ip_hdr = Ipv4Header {
         ihl: 20,
         total_length: total_len as u16,
-        identification: 0x1111,
+        identification: next_ip_identification(),
         flags_fragment: 0,
         ttl: 64,
         protocol: PROTOCOL_ICMP,

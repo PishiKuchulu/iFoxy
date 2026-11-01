@@ -61,7 +61,7 @@ impl EdgeResolver {
     ) -> Result<SocketAddr, EdgeResolutionError> {
         let key = format!("{}:{}", host.to_lowercase(), port);
 
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(cached) = cache.get(&key) {
             return Ok(*cached);
         }
@@ -86,7 +86,7 @@ impl EdgeResolver {
 
     /// Invalidate cache for a specific host and port or all hosts.
     pub fn clear_cache(&self) {
-        self.cache.lock().unwrap().clear();
+        self.cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }
 

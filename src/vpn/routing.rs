@@ -81,12 +81,53 @@ pub fn detect_default_gateway_and_interface() -> Result<(Ipv4Addr, u32), RouteEr
 
 #[cfg(windows)]
 pub fn is_admin() -> bool {
-    #[link(name = "shell32")]
+    // TokenElevation of the actual process token (wave-3 review, H-2).
+    // The previous check used shell32's deprecated IsUserAnAdmin(),
+    // which reports Administrators GROUP MEMBERSHIP — under UAC a
+    // standard-token process of an admin user reports "admin" while not
+    // being elevated, which misfired the elevation gate in main.rs.
+    #[link(name = "advapi32")]
     extern "system" {
-        fn IsUserAnAdmin() -> i32;
+        fn OpenProcessToken(
+            process_handle: *mut std::ffi::c_void,
+            desired_access: u32,
+            token_handle: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token_handle: *mut std::ffi::c_void,
+            token_information_class: u32,
+            token_information: *mut std::ffi::c_void,
+            token_information_length: u32,
+            return_length: *mut u32,
+        ) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
     }
 
-    unsafe { IsUserAnAdmin() != 0 }
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION_CLASS: u32 = 20; // TokenElevation
+
+    unsafe {
+        let mut token: *mut std::ffi::c_void = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        // TOKEN_ELEVATION { TokenIsElevated: DWORD }
+        let mut elevated: u32 = 0;
+        let mut return_length: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION_CLASS,
+            &mut elevated as *mut u32 as *mut std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+            &mut return_length,
+        );
+        CloseHandle(token);
+        ok != 0 && elevated != 0
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -153,7 +194,7 @@ pub fn request_elevation() {
         // state in the user's tree, and the display/bus variables give
         // the elevated GUI its session even on pkexec versions that do
         // not propagate them.
-        let mut cmd = std::process::Command::new("pkexec");
+        let mut cmd = std::process::Command::new(crate::syscmd::tool_path("pkexec"));
         cmd.arg("env").arg("IFOXY_ELEVATION_TRIED=1");
         for var in [
             "HOME",

@@ -114,15 +114,17 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
     let out = if let (true, Some(uid)) = (am_root, desktop_uid) {
         let runtime_dir = format!("/run/user/{}", uid);
         let bus = format!("unix:path={}/bus", runtime_dir);
-        let mut cmd = std::process::Command::new("runuser");
+        let mut cmd = std::process::Command::new(crate::syscmd::tool_path("runuser"));
         cmd.args(["-u", &uid.to_string(), "--", "env"])
             .arg(format!("XDG_RUNTIME_DIR={}", runtime_dir))
             .arg(format!("DBUS_SESSION_BUS_ADDRESS={}", bus))
-            .arg("gsettings")
+            .arg(crate::syscmd::tool_path("gsettings"))
             .args(args);
         cmd.output()
     } else {
-        std::process::Command::new("gsettings").args(args).output()
+        std::process::Command::new(crate::syscmd::tool_path("gsettings"))
+            .args(args)
+            .output()
     }
     .map_err(|e| format!("failed to run gsettings (is gsettings installed?): {}", e))?;
 

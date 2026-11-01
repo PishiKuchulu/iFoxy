@@ -28,6 +28,14 @@ pub const MAX_RETRANSMITS: u32 = 15;
 pub const ESTABLISHED_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Maximum time to wait for the upstream CONNECT to be accepted (S-3).
 pub const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Cap on simultaneous upstream DNS resolutions from the TUN DNS
+/// forwarder (wave-3 review, H-7).
+pub const MAX_CONCURRENT_DNS_QUERIES: usize = 16;
+/// Our advertised Window Scale shift when the client offers scaling:
+/// 65535 << 2 = 262,140 bytes, just under the per-flow reassembly cap
+/// (MAX_REASSEMBLY_BUF_PER_FLOW), lifting the old fixed ~64 KiB
+/// per-flow ceiling (wave-3 review, H-6).
+pub const OUR_WINDOW_SCALE: u8 = 2;
 
 #[inline]
 pub fn seq_before(a: u32, b: u32) -> bool {
@@ -116,7 +124,18 @@ impl DnsCache {
 
     pub fn insert(&mut self, query: &[u8], response: Vec<u8>) {
         if let Some(key) = Self::extract_key(query) {
-            let expires_at = Instant::now() + self.default_ttl;
+            // Honor the records' own TTL (minimum across the answer
+            // section), clamped to [5 s, 1 h] and capped by this
+            // cache's configured TTL, which remains the fallback for
+            // responses whose TTL cannot be parsed (wave-3 review,
+            // H-7). Serving an entry past its upstream TTL is the bug
+            // being fixed; the cap is local freshness policy.
+            let ttl = dns_response_min_ttl(&response)
+                .map(|secs| {
+                    Duration::from_secs((secs as u64).clamp(5, 3600)).min(self.default_ttl)
+                })
+                .unwrap_or(self.default_ttl);
+            let expires_at = Instant::now() + ttl;
             if self.entries.len() >= 1024 {
                 self.prune();
             }
@@ -141,6 +160,64 @@ impl DnsCache {
     }
 }
 
+/// Skip a DNS name (label sequence, possibly ending in a compression
+/// pointer) starting at `pos`; returns the offset just past it.
+fn skip_dns_name(msg: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let len = *msg.get(pos)?;
+        if len == 0 {
+            return Some(pos + 1);
+        }
+        if len & 0xC0 == 0xC0 {
+            // Compression pointer: two bytes, terminates the name here.
+            return Some(pos + 2);
+        }
+        if len & 0xC0 != 0 {
+            return None; // reserved label bits — malformed
+        }
+        pos += 1 + len as usize;
+        if pos > msg.len() {
+            return None;
+        }
+    }
+}
+
+/// Minimum TTL across a DNS response's answer records. `None` when the
+/// message has no answers or cannot be parsed.
+pub fn dns_response_min_ttl(msg: &[u8]) -> Option<u32> {
+    if msg.len() < 12 {
+        return None;
+    }
+    let qd_count = u16::from_be_bytes([msg[4], msg[5]]) as usize;
+    let an_count = u16::from_be_bytes([msg[6], msg[7]]) as usize;
+    if an_count == 0 {
+        return None;
+    }
+    let mut pos = 12usize;
+    for _ in 0..qd_count {
+        pos = skip_dns_name(msg, pos)?;
+        pos = pos.checked_add(4)?; // QTYPE + QCLASS
+        if pos > msg.len() {
+            return None;
+        }
+    }
+    let mut min_ttl: Option<u32> = None;
+    for _ in 0..an_count {
+        pos = skip_dns_name(msg, pos)?;
+        if pos + 10 > msg.len() {
+            return None;
+        }
+        let ttl = u32::from_be_bytes([msg[pos + 4], msg[pos + 5], msg[pos + 6], msg[pos + 7]]);
+        let rdlen = u16::from_be_bytes([msg[pos + 8], msg[pos + 9]]) as usize;
+        min_ttl = Some(min_ttl.map_or(ttl, |m| m.min(ttl)));
+        pos += 10 + rdlen;
+        if pos > msg.len() {
+            return None;
+        }
+    }
+    min_ttl
+}
+
 pub struct VirtualNetstack {
     adapter_ip: Ipv4Addr,
     upstream: Arc<H2UpstreamSession>,
@@ -149,6 +226,10 @@ pub struct VirtualNetstack {
     reap_tx: mpsc::Sender<FiveTuple>,
     running: Arc<AtomicBool>,
     dns_cache: Arc<tokio::sync::Mutex<DnsCache>>,
+    /// Bounds concurrent upstream DNS resolutions; without it a burst of
+    /// distinct queries spawns an unbounded number of upstream CONNECTs
+    /// (wave-3 review, H-7).
+    dns_inflight: Arc<tokio::sync::Semaphore>,
 }
 
 impl VirtualNetstack {
@@ -163,6 +244,7 @@ impl VirtualNetstack {
         let dns_cache = Arc::new(tokio::sync::Mutex::new(DnsCache::new(Duration::from_secs(
             60,
         ))));
+        let dns_inflight = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DNS_QUERIES));
 
         let flows_for_reaper = flows.clone();
         let running_for_reaper = running.clone();
@@ -189,6 +271,7 @@ impl VirtualNetstack {
             reap_tx,
             running,
             dns_cache,
+            dns_inflight,
         }
     }
 
@@ -251,6 +334,15 @@ impl VirtualNetstack {
         if payload.len() < UDP_HEADER_LEN {
             return;
         }
+        // Verify the UDP checksum when one is present (0 means "no
+        // checksum" in IPv4 and stays accepted) (wave-3 review, H-5).
+        let udp_checksum = u16::from_be_bytes([payload[6], payload[7]]);
+        if udp_checksum != 0
+            && calculate_transport_checksum(ip_hdr.src_ip, ip_hdr.dst_ip, PROTOCOL_UDP, payload)
+                != 0
+        {
+            return;
+        }
         let src_port = u16::from_be_bytes([payload[0], payload[1]]);
         let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
 
@@ -287,7 +379,7 @@ impl VirtualNetstack {
             let ip_hdr = Ipv4Header {
                 ihl: 20,
                 total_length: ip_len as u16,
-                identification: 0x9999,
+                identification: crate::vpn::packet::next_ip_identification(),
                 flags_fragment: 0,
                 ttl: 64,
                 protocol: PROTOCOL_UDP,
@@ -315,8 +407,20 @@ impl VirtualNetstack {
         let outbound_tx = self.outbound_packet_tx.clone();
         let query_data = dns_payload.to_vec();
         let dns_cache = self.dns_cache.clone();
+        let dns_inflight = self.dns_inflight.clone();
 
         tokio::spawn(async move {
+            // Bound concurrent upstream resolutions (H-7). When the cap
+            // is hit the query is dropped; the client's resolver retries
+            // on its own, which is the standard forwarder behavior under
+            // a burst and avoids an upstream CONNECT flood.
+            let _permit = match dns_inflight.try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::debug!("DNS concurrency cap reached; dropping query");
+                    return;
+                }
+            };
             let dns_server = if server_ip.is_unspecified() || server_ip.is_loopback() {
                 "1.1.1.1".to_string()
             } else {
@@ -381,7 +485,7 @@ impl VirtualNetstack {
                     let ip_hdr = Ipv4Header {
                         ihl: 20,
                         total_length: ip_len as u16,
-                        identification: 0x9999,
+                        identification: crate::vpn::packet::next_ip_identification(),
                         flags_fragment: 0,
                         ttl: 64,
                         protocol: PROTOCOL_UDP,
@@ -554,6 +658,12 @@ fn decode_chunked_body(mut body: &[u8]) -> Result<Vec<u8>, String> {
 
 impl VirtualNetstack {
     async fn handle_tcp(&self, ip_hdr: &Ipv4Header, payload: &[u8]) {
+        // Verify the TCP checksum (pseudo-header included) before any
+        // state is touched (wave-3 review, H-5). A valid segment's
+        // checksum over itself folds to zero.
+        if calculate_transport_checksum(ip_hdr.src_ip, ip_hdr.dst_ip, PROTOCOL_TCP, payload) != 0 {
+            return;
+        }
         let (tcp_hdr, tcp_payload) = match TcpHeader::parse(payload) {
             Some(res) => res,
             None => return,
@@ -663,6 +773,10 @@ struct TcpFlowActor {
     last_acked_by_client: u32,
     last_client_ack: u32,
     client_win: u32,
+    /// Negotiated Window Scale shifts (RFC 7323); both zero when the
+    /// client's SYN carried no WS option (wave-3 review, H-6).
+    client_wscale: u8,
+    our_wscale: u8,
     dup_ack_count: u32,
     last_activity: Instant,
     reassembly_queue: BTreeMap<u32, Vec<u8>>,
@@ -698,7 +812,15 @@ impl TcpFlowActor {
             next_local_seq: next_local,
             last_acked_by_client: local_isn,
             last_client_ack: local_isn,
+            // The SYN's window field is never scaled (RFC 7323 §2.3);
+            // scaling applies to later packets (see handle_client_packet).
             client_win: (initial_syn_hdr.window_size as u32).max(DEFAULT_MSS as u32),
+            client_wscale: initial_syn_hdr.window_scale.map(|s| s.min(14)).unwrap_or(0),
+            our_wscale: if initial_syn_hdr.window_scale.is_some() {
+                OUR_WINDOW_SCALE
+            } else {
+                0
+            },
             dup_ack_count: 0,
             last_activity: Instant::now(),
             reassembly_queue: BTreeMap::new(),
@@ -721,6 +843,7 @@ impl TcpFlowActor {
             self.next_expected_client_seq,
             DEFAULT_WINDOW_SIZE,
             DEFAULT_MSS,
+            (self.our_wscale > 0).then_some(self.our_wscale),
         );
         let _ = self.outbound_tx.send(syn_ack).await;
 
@@ -841,6 +964,12 @@ impl TcpFlowActor {
     }
 
     fn in_flight_bytes(&self) -> usize {
+        if seq_after(self.last_acked_by_client, self.next_local_seq) {
+            // Bogus ACK for data never sent (wave-3 review, L-3): the
+            // wrapping difference would be a huge, distorted value.
+            // Report a full flight so the sender pauses instead.
+            return MAX_IN_FLIGHT_BYTES_PER_FLOW;
+        }
         self.next_local_seq.wrapping_sub(self.last_acked_by_client) as usize
     }
 
@@ -906,7 +1035,11 @@ impl TcpFlowActor {
         h2_write: &mut W,
     ) {
         self.last_activity = Instant::now();
-        self.client_win = tcp_hdr.window_size as u32;
+        // The window field is scaled by the negotiated shift on every
+        // packet EXCEPT a SYN, whose window is never scaled (RFC 7323).
+        if (tcp_hdr.flags & TCP_FLAG_SYN) == 0 {
+            self.client_win = (tcp_hdr.window_size as u32) << self.client_wscale;
+        }
 
         if (tcp_hdr.flags & TCP_FLAG_RST) != 0 {
             self.state = TcpConnState::Closed;
@@ -924,6 +1057,7 @@ impl TcpFlowActor {
                 self.next_expected_client_seq,
                 DEFAULT_WINDOW_SIZE,
                 DEFAULT_MSS,
+                (self.our_wscale > 0).then_some(self.our_wscale),
             );
             let _ = self.outbound_tx.send(syn_ack).await;
             return;

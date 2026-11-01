@@ -95,7 +95,7 @@ impl FirewallBackend for WindowsFirewallBackend {
                 return Err(format!("FwpmEngineOpen0 failed: 0x{:08X}", res));
             }
 
-            *self.engine_handle.lock().unwrap() = Some(handle);
+            *self.engine_handle.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
 
             // Real filters, added in a dynamic session so BFE (the Base
             // Filtering Engine) automatically reaps every one of them if
@@ -117,7 +117,7 @@ impl FirewallBackend for WindowsFirewallBackend {
                     unsafe {
                         let _ = FwpmEngineClose0(handle);
                     }
-                    *self.engine_handle.lock().unwrap() = None;
+                    *self.engine_handle.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     Err(e)
                 }
             }
@@ -134,7 +134,7 @@ impl FirewallBackend for WindowsFirewallBackend {
         {
             use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::*;
 
-            let mut lock = self.engine_handle.lock().unwrap();
+            let mut lock = self.engine_handle.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(handle) = lock.take() {
                 for &id in filter_ids {
                     unsafe {
@@ -185,14 +185,12 @@ impl Drop for WindowsFirewallBackend {
 /// uses a higher weight than the catch-all BLOCK filter and is therefore
 /// evaluated first.
 ///
-/// NOT independently verified: the review environment has no Windows
-/// machine and no Rust toolchain, so this code has been read carefully
-/// against the public WFP API shape but never compiled. The single most
-/// likely compile failure is the name of the anonymous union field inside
-/// `FWP_CONDITION_VALUE0` / `FWP_VALUE0` / `FWPM_ACTION0` (written below as
-/// `.Anonymous.<field>`, windows-sys's usual naming for an anonymous C
-/// union) — if your installed windows-sys version names it differently,
-/// that is the first thing to fix.
+/// Verification status (updated in the wave-3 fixes): this module IS
+/// compiled on every CI run (build-windows.yml, MSVC) and the test
+/// suite runs there too since the C-5 fix. What remains unverified by
+/// automation is the RUNTIME behavior of the real WFP filters on a live
+/// Windows machine — the admin-only end-to-end tests are #[ignore]d and
+/// run manually (see docs/TESTING.md).
 #[cfg(windows)]
 mod wfp {
     use super::KillSwitchPolicy;
@@ -458,11 +456,11 @@ impl MockFirewallBackend {
     }
 
     pub fn get_installed_rule_definitions(&self) -> Vec<WfpRuleDefinition> {
-        self.installed_definitions.lock().unwrap().clone()
+        self.installed_definitions.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn installed_filter_count(&self) -> usize {
-        self.installed_definitions.lock().unwrap().len()
+        self.installed_definitions.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }
 
@@ -560,14 +558,14 @@ impl FirewallBackend for MockFirewallBackend {
             installed.push(rule);
         }
 
-        self.installed_rules.lock().unwrap().extend(rule_strings);
+        self.installed_rules.lock().unwrap_or_else(|p| p.into_inner()).extend(rule_strings);
         Ok(installed.iter().map(|r| r.filter_id).collect())
     }
 
     fn remove_kill_switch(&self, filter_ids: &[u64]) -> Result<(), String> {
-        let mut defs = self.installed_definitions.lock().unwrap();
+        let mut defs = self.installed_definitions.lock().unwrap_or_else(|p| p.into_inner());
         defs.retain(|d| !filter_ids.contains(&d.filter_id));
-        let mut strings = self.installed_rules.lock().unwrap();
+        let mut strings = self.installed_rules.lock().unwrap_or_else(|p| p.into_inner());
         strings.clear();
         for d in defs.iter() {
             strings.push(d.description.clone());
@@ -713,7 +711,7 @@ impl LinuxFirewallBackend {
         let mut full: Vec<&str> = Vec::with_capacity(args.len() + 1);
         full.push("-w");
         full.extend_from_slice(args);
-        let out = std::process::Command::new(bin)
+        let out = std::process::Command::new(crate::syscmd::tool_path(bin))
             .args(&full)
             .output()
             .map_err(|e| format!("failed to run {} (is iptables installed?): {}", bin, e))?;

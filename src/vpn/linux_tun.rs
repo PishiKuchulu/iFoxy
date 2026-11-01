@@ -44,7 +44,8 @@ struct Ifreq {
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Result<String, TunError> {
-    let out = Command::new(program)
+    // Absolute path resolution: this process runs as root (C-3).
+    let out = Command::new(crate::syscmd::tool_path(program))
         .args(args)
         .output()
         .map_err(|e| TunError::ConfigFailed(format!("failed to run {}: {}", program, e)))?;
@@ -77,8 +78,10 @@ enum DnsGuard {
     /// systemd-resolved per-link DNS: revoked explicitly, and also
     /// disappears with the interface.
     Resolvectl { if_index: u32 },
-    /// /etc/resolv.conf was rewritten; holds the original contents.
-    ResolvConf { original: String },
+    /// /etc/resolv.conf was rewritten; holds the original contents and
+    /// the exact content this device wrote (Drop restores only when the
+    /// file still holds `written` — see the M-10 guard in Drop).
+    ResolvConf { original: String, written: String },
     None,
 }
 
@@ -131,15 +134,12 @@ impl LinuxTunDevice {
             String::from_utf8_lossy(&ifreq.name[..end]).into_owned()
         };
 
-        // Address + MTU + link up (addr add tolerates an existing address
-        // from a crashed previous run attaching to the same interface).
+        // Address + MTU + link up. `addr replace` is idempotent — it
+        // tolerates an existing address from a crashed previous run —
+        // without parsing the locale-dependent "File exists" error text
+        // (wave-3 review, H-10).
         let addr = format!("{}/24", assigned_ip);
-        if let Err(e) = run_cmd("ip", &["addr", "add", &addr, "dev", &actual_name]) {
-            let msg = format!("{}", e);
-            if !msg.contains("File exists") {
-                return Err(e);
-            }
-        }
+        run_cmd("ip", &["addr", "replace", &addr, "dev", &actual_name])?;
         run_cmd(
             "ip",
             &[
@@ -186,6 +186,21 @@ impl LinuxTunDevice {
             return DnsGuard::Resolvectl { if_index };
         }
 
+        // Symlinked /etc/resolv.conf (e.g. the systemd-resolved stub):
+        // following the link with a truncating write would corrupt the
+        // target file, and this fallback must not fight resolved —
+        // resolvectl above is the correct route and already failed, so
+        // leave DNS untouched (wave-3 review, M-11).
+        if std::fs::symlink_metadata("/etc/resolv.conf")
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                "/etc/resolv.conf is a symlink and resolvectl is unavailable; leaving DNS unchanged"
+            );
+            return DnsGuard::None;
+        }
+
         // Fallback: rewrite /etc/resolv.conf, keeping the original for
         // restore. Only the nameserver lines are replaced; options and
         // search domains are preserved.
@@ -198,7 +213,7 @@ impl LinuxTunDevice {
                         new_content.push('\n');
                     }
                 }
-                match std::fs::write("/etc/resolv.conf", new_content) {
+                match std::fs::write("/etc/resolv.conf", &new_content) {
                     Ok(()) => {
                         // Journal the original for crash recovery: if
                         // the process dies before Drop runs, the next
@@ -210,7 +225,10 @@ impl LinuxTunDevice {
                         let mut j = journal.lock().unwrap_or_else(|p| p.into_inner());
                         j.record_resolv_conf_backup(original.clone());
                         let _ = j.flush_to_disk();
-                        DnsGuard::ResolvConf { original }
+                        DnsGuard::ResolvConf {
+                            original,
+                            written: new_content,
+                        }
                     }
                     Err(e) => {
                         tracing::warn!("could not rewrite /etc/resolv.conf: {}", e);
@@ -232,7 +250,19 @@ impl Drop for LinuxTunDevice {
             DnsGuard::Resolvectl { if_index } => {
                 let _ = run_cmd("resolvectl", &["revert", &if_index.to_string()]);
             }
-            DnsGuard::ResolvConf { original } => {
+            DnsGuard::ResolvConf { original, written } => {
+                // Restore only when the file still holds exactly what
+                // THIS device wrote (wave-3 review, M-10): during a
+                // reconnect a newer device may already have applied its
+                // own tunnel DNS, and this (older) device's Drop must not
+                // clobber it with the pre-VPN original.
+                let current = std::fs::read_to_string("/etc/resolv.conf").ok();
+                if current.as_deref() != Some(written.as_str()) {
+                    tracing::warn!(
+                        "/etc/resolv.conf changed since this device wrote it; skipping restore (a newer owner manages DNS now)"
+                    );
+                    return;
+                }
                 if std::fs::write("/etc/resolv.conf", original).is_ok() {
                     let journal =
                         crate::vpn::recovery_journal::RecoveryJournal::shared_default();

@@ -60,6 +60,9 @@ impl WindowsNativeBackend {
             24 => Ipv4Addr::new(255, 255, 255, 0),
             32 => Ipv4Addr::new(255, 255, 255, 255),
             _ => {
+                // Clamp: a prefix above 32 is invalid for IPv4 and made
+                // the shift below underflow (wave-3 review, L-11).
+                let prefix_len = prefix_len.min(32);
                 let mask: u32 = if prefix_len == 0 {
                     0
                 } else {
@@ -102,7 +105,7 @@ fn netsh_route(
     }
     args.push("store=active".into());
 
-    let out = std::process::Command::new("netsh")
+    let out = std::process::Command::new(crate::syscmd::tool_path("netsh"))
         .args(&args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -289,7 +292,7 @@ impl LinuxNativeBackend {
         args.push("metric".into());
         args.push(route.metric.to_string());
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let out = std::process::Command::new("ip")
+        let out = std::process::Command::new(crate::syscmd::tool_path("ip"))
             .args(&arg_refs)
             .output()
             .map_err(|e| RouteError::CommandFailed(format!("failed to run ip: {}", e)))?;
@@ -394,11 +397,11 @@ impl MockNetworkBackend {
     }
 
     pub fn installed_count(&self) -> usize {
-        self.installed_routes.lock().unwrap().len()
+        self.installed_routes.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     pub fn deleted_count(&self) -> usize {
-        self.deleted_routes.lock().unwrap().len()
+        self.deleted_routes.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }
 
@@ -417,7 +420,7 @@ impl NetworkBackend for MockNetworkBackend {
     }
 
     fn delete_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError> {
-        let mut installed = self.installed_routes.lock().unwrap();
+        let mut installed = self.installed_routes.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(pos) = installed
             .iter()
             .position(|(r, idx)| r == route && *idx == if_index)
@@ -432,12 +435,12 @@ impl NetworkBackend for MockNetworkBackend {
     }
 
     fn set_system_proxy(&self, port: u16) -> Result<(), String> {
-        *self.proxy_enabled_port.lock().unwrap() = Some(port);
+        *self.proxy_enabled_port.lock().unwrap_or_else(|p| p.into_inner()) = Some(port);
         Ok(())
     }
 
     fn restore_system_proxy(&self, _backup: Option<&ProxySettingsBackup>) -> Result<(), String> {
-        *self.proxy_enabled_port.lock().unwrap() = None;
+        *self.proxy_enabled_port.lock().unwrap_or_else(|p| p.into_inner()) = None;
         Ok(())
     }
 }

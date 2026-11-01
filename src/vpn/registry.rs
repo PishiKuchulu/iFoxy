@@ -30,6 +30,8 @@ extern "system" {
         cbdata: u32,
     ) -> i32;
 
+    fn RegDeleteValueW(hkey: *mut c_void, lpvaluename: *const u16) -> i32;
+
     fn RegCloseKey(hkey: *mut c_void) -> i32;
 }
 
@@ -143,13 +145,19 @@ impl WinRegistry {
             RegCloseKey(hkey);
 
             if res == ERROR_SUCCESS && val_type == REG_SZ {
-                // Wide string decoding (UTF-16LE)
-                let u16_slice: &[u16] =
-                    std::slice::from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2);
+                // Wide string decoding (UTF-16LE). The byte buffer is
+                // decoded pairwise instead of being reinterpreted as a
+                // &[u16] via from_raw_parts: a Vec<u8> is not guaranteed
+                // 2-byte aligned, so the cast was formally UB (wave-3
+                // review, L-12).
+                let units: Vec<u16> = buf
+                    .chunks_exact(2)
+                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                    .collect();
                 // Trim trailing null characters
-                let trimmed = match u16_slice.iter().position(|&c| c == 0) {
-                    Some(idx) => &u16_slice[..idx],
-                    None => u16_slice,
+                let trimmed = match units.iter().position(|&c| c == 0) {
+                    Some(idx) => &units[..idx],
+                    None => &units[..],
                 };
                 Some(String::from_utf16_lossy(trimmed))
             } else {
@@ -231,6 +239,36 @@ impl WinRegistry {
         }
     }
 
+    /// Delete a value from the Internet Settings key. Deleting an
+    /// already-absent value counts as success (the desired end state).
+    pub fn delete_internet_value(name: &str) -> Result<(), String> {
+        unsafe {
+            let key_wide = to_wide_null(INTERNET_SETTINGS_KEY);
+            let mut hkey: *mut c_void = std::ptr::null_mut();
+            let res = RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                key_wide.as_ptr(),
+                0,
+                KEY_WRITE,
+                &mut hkey,
+            );
+            if res != ERROR_SUCCESS {
+                return Err(format!("RegOpenKeyExW failed with code {}", res));
+            }
+
+            let name_wide = to_wide_null(name);
+            let del_res = RegDeleteValueW(hkey, name_wide.as_ptr());
+            RegCloseKey(hkey);
+
+            // ERROR_FILE_NOT_FOUND (2): value already gone — success.
+            if del_res == ERROR_SUCCESS || del_res == 2 {
+                Ok(())
+            } else {
+                Err(format!("RegDeleteValueW failed with code {}", del_res))
+            }
+        }
+    }
+
     /// Write String (SZ) value to HKEY_LOCAL_MACHINE\<subkey>
     pub fn write_hklm_string(subkey: &str, name: &str, value: &str) -> Result<(), String> {
         unsafe {
@@ -277,22 +315,56 @@ impl WinRegistry {
         }
     }
 
-    /// Restore previous proxy settings from backup
+    /// Restore previous proxy settings from backup.
+    ///
+    /// Every write's result is collected and any failure is returned
+    /// (wave-3 review, H-1): the old version discarded all three results
+    /// with `let _ =` and unconditionally returned Ok, so the caller
+    /// logged "restored" and cleared the recovery record even when
+    /// nothing had actually been restored. A backup field of `None`
+    /// means the value did not exist before the VPN ran, so the
+    /// VPN-era value is DELETED rather than left behind (L-13).
     pub fn restore_proxy_settings(backup: &ProxySettingsBackup) -> Result<(), String> {
-        if let Some(enable) = backup.proxy_enable {
-            let _ = Self::write_internet_dword("ProxyEnable", enable);
+        let mut failures: Vec<String> = Vec::new();
+
+        let enable = backup.proxy_enable.unwrap_or(0);
+        if let Err(e) = Self::write_internet_dword("ProxyEnable", enable) {
+            failures.push(format!("ProxyEnable: {e}"));
+        }
+
+        match backup.proxy_server {
+            Some(ref server) => {
+                if let Err(e) = Self::write_internet_string("ProxyServer", server) {
+                    failures.push(format!("ProxyServer: {e}"));
+                }
+            }
+            None => {
+                if let Err(e) = Self::delete_internet_value("ProxyServer") {
+                    failures.push(format!("ProxyServer delete: {e}"));
+                }
+            }
+        }
+
+        match backup.proxy_override {
+            Some(ref override_val) => {
+                if let Err(e) = Self::write_internet_string("ProxyOverride", override_val) {
+                    failures.push(format!("ProxyOverride: {e}"));
+                }
+            }
+            None => {
+                if let Err(e) = Self::delete_internet_value("ProxyOverride") {
+                    failures.push(format!("ProxyOverride delete: {e}"));
+                }
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
         } else {
-            let _ = Self::write_internet_dword("ProxyEnable", 0);
+            Err(format!(
+                "Failed to restore proxy settings: {}",
+                failures.join("; ")
+            ))
         }
-
-        if let Some(ref server) = backup.proxy_server {
-            let _ = Self::write_internet_string("ProxyServer", server);
-        }
-
-        if let Some(ref override_val) = backup.proxy_override {
-            let _ = Self::write_internet_string("ProxyOverride", override_val);
-        }
-
-        Ok(())
     }
 }

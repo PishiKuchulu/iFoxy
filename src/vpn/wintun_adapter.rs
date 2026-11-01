@@ -158,7 +158,7 @@ fn set_mtu_metric_netsh(adapter_name: &str, mtu: u32, metric: u32) -> Result<(),
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mtu_arg = format!("mtu={}", mtu);
-    let out = std::process::Command::new("netsh")
+    let out = std::process::Command::new(crate::syscmd::tool_path("netsh"))
         .args([
             "interface",
             "ipv4",
@@ -179,7 +179,7 @@ fn set_mtu_metric_netsh(adapter_name: &str, mtu: u32, metric: u32) -> Result<(),
     }
 
     let metric_arg = format!("metric={}", metric);
-    let out = std::process::Command::new("netsh")
+    let out = std::process::Command::new(crate::syscmd::tool_path("netsh"))
         .args([
             "interface",
             "ipv4",
