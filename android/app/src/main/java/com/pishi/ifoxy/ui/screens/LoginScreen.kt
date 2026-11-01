@@ -1,8 +1,5 @@
 package com.pishi.ifoxy.ui.screens
 
-import android.content.Intent
-import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,23 +15,16 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -43,20 +33,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pishi.ifoxy.data.FxaAuthRepository
+import com.pishi.ifoxy.data.isUnconfirmedSession
 import com.pishi.ifoxy.ui.components.WorldMapLayer
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
-import com.pishi.ifoxy.ui.theme.IFoxyCardDark
 import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
 import com.pishi.ifoxy.ui.theme.IFoxyInk
 import com.pishi.ifoxy.ui.theme.IFoxyNeonOrange
@@ -64,83 +49,70 @@ import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import kotlinx.coroutines.launch
 
-private const val FXA_RESET_PASSWORD_URL = "https://accounts.firefox.com/reset_password"
-
 /**
  * Sign in, per the Penpot design (04): dark brand screen, glowing orange
- * power mark, Firefox-account form. Auth flow, input sanitising and the
- * SEC-FX-01 secret handling are unchanged.
+ * power mark. The credential form is gone: sign-in itself happens on
+ * Mozilla's official Firefox Accounts page, shown inside the app by
+ * [BrowserLoginScreen]. The direct API login this screen used to drive
+ * is blocked by Mozilla's bot protection (HTTP 406), and with the page
+ * flow the password and any verification code are entered on Mozilla's
+ * page and never pass through this app's own code. The page hands the
+ * app a session token via the FxA WebChannel protocol, and
+ * [FxaAuthRepository.completeBrowserLogin] exchanges it for the usual
+ * OAuth tokens.
  */
 @Composable
 fun LoginScreen(
     authRepository: FxaAuthRepository,
     onSignedIn: () -> Unit,
 ) {
-    var email by rememberSaveable { mutableStateOf("") }
-    // SEC-FX-01: secrets must never enter SavedState (it can be persisted to
-    // disk by the system). Password and 2FA code live in memory only.
-    var password by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var awaitingTwoFactor by rememberSaveable { mutableStateOf(authRepository.pendingSessionToken != null) }
-    var isLoading by remember { mutableStateOf(false) }
+    var browserStartUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    var completingBrowserLogin by rememberSaveable { mutableStateOf(false) }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    val focusManager = LocalFocusManager.current
-    val context = LocalContext.current
 
-    BackHandler(enabled = awaitingTwoFactor) {
-        authRepository.clearPendingSession()
-        awaitingTwoFactor = false
+    fun handleBrowserSession(sessionToken: String) {
+        if (completingBrowserLogin) return
+        completingBrowserLogin = true
         errorMessage = null
-        code = ""
-    }
-
-    fun doSubmitLogin() {
-        val cleanEmail = FxaAuthRepository.normalizeEmail(email)
-        if (cleanEmail.isBlank() || password.isBlank() || isLoading) return
-        errorMessage = null
-        isLoading = true
+        infoMessage = null
         scope.launch {
-            val result = authRepository.startLogin(cleanEmail, password)
-            isLoading = false
-            result.onSuccess { needsVerification ->
-                if (needsVerification) awaitingTwoFactor = true else onSignedIn()
-            }.onFailure { errorMessage = it.message ?: "Sign-in failed" }
-        }
-    }
-
-    fun doSubmitTwoFactor() {
-        val cleanCode = FxaAuthRepository.sanitizeCode(code)
-        if (cleanCode.isBlank() || isLoading) return
-        errorMessage = null
-        isLoading = true
-        scope.launch {
-            val result = authRepository.submitTwoFactorCode(cleanCode)
-            isLoading = false
-            result.onSuccess { onSignedIn() }
-                .onFailure {
-                    errorMessage = it.message ?: "Verification failed"
-                    if (authRepository.pendingSessionToken == null) {
-                        awaitingTwoFactor = false
-                    }
+            val result = authRepository.completeBrowserLogin(sessionToken)
+            completingBrowserLogin = false
+            result.onSuccess {
+                browserStartUrl = null
+                onSignedIn()
+            }.onFailure {
+                if (it.isUnconfirmedSession()) {
+                    // Mozilla accepted the credentials but still wants
+                    // the sign-in confirmed from the email it sent; the
+                    // session cannot be exchanged until that happens.
+                    browserStartUrl = null
+                    infoMessage =
+                        "Mozilla is waiting for you to confirm this sign-in from the " +
+                            "email it sent you. Confirm it, then sign in again."
+                } else {
+                    errorMessage = it.message ?: "Sign-in failed. Please try again."
                 }
+            }
         }
     }
 
-    val fieldColors = TextFieldDefaults.colors(
-        focusedContainerColor = IFoxyCardDark,
-        unfocusedContainerColor = IFoxyCardDark,
-        disabledContainerColor = IFoxyCardDark,
-        focusedIndicatorColor = Color.Transparent,
-        unfocusedIndicatorColor = Color.Transparent,
-        disabledIndicatorColor = Color.Transparent,
-        focusedTextColor = Color.White,
-        unfocusedTextColor = Color.White,
-        cursorColor = IFoxyYellow,
-        focusedLabelColor = Color.White.copy(alpha = 0.6f),
-        unfocusedLabelColor = Color.White.copy(alpha = 0.45f),
-    )
-    val fieldShape = RoundedCornerShape(16.dp)
+    if (browserStartUrl != null) {
+        BrowserLoginScreen(
+            startUrl = browserStartUrl!!,
+            busy = completingBrowserLogin,
+            errorMessage = errorMessage,
+            onSessionCaptured = ::handleBrowserSession,
+            onCanceled = {
+                browserStartUrl = null
+                completingBrowserLogin = false
+                errorMessage = null
+            },
+        )
+        return
+    }
 
     Box(
         modifier = Modifier
@@ -222,179 +194,60 @@ fun LoginScreen(
             )
             Spacer(Modifier.height(30.dp))
 
-            if (!awaitingTwoFactor) {
-                TextField(
-                    value = email,
-                    onValueChange = {
-                        email = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").lowercase()
-                    },
-                    label = { Text("Email") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Email,
-                        imeAction = ImeAction.Next,
-                        autoCorrectEnabled = false,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }
-                    ),
-                    colors = fieldColors,
-                    shape = fieldShape,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                TextField(
-                    value = password,
-                    onValueChange = {
-                        password = it.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
-                    },
-                    label = { Text("Password") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            doSubmitLogin()
-                        }
-                    ),
-                    colors = fieldColors,
-                    shape = fieldShape,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(20.dp))
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        doSubmitLogin()
-                    },
-                    enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = IFoxyYellow,
-                        contentColor = IFoxyInk,
-                        disabledContainerColor = IFoxyYellow.copy(alpha = 0.4f),
-                        disabledContentColor = IFoxyInk.copy(alpha = 0.6f),
-                    ),
-                    shape = RoundedCornerShape(27.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(54.dp),
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = IFoxyInk,
-                        )
-                    } else {
-                        Text(
-                            "Sign In",
-                            style = TextStyle(
-                                fontFamily = PoppinsFamily,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.5.sp,
-                            ),
-                        )
-                    }
-                }
-
-                TextButton(
-                    onClick = {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(FXA_RESET_PASSWORD_URL)))
-                    },
-                ) {
-                    Text(
-                        "Forgot password?",
-                        style = TextStyle(
-                            fontFamily = PoppinsFamily,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.5.sp,
-                        ),
-                        color = IFoxyYellow,
-                    )
-                }
+            Text(
+                "Sign-in opens Mozilla's official Firefox page inside the app. " +
+                    "Your password is entered there — iFoxy never sees or stores it.",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 13.5.sp,
+                ),
+                color = Color.White.copy(alpha = 0.55f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(20.dp))
+            Button(
+                onClick = {
+                    errorMessage = null
+                    infoMessage = null
+                    browserStartUrl = authRepository.getBrowserLoginUrl()
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = IFoxyYellow,
+                    contentColor = IFoxyInk,
+                ),
+                shape = RoundedCornerShape(27.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+            ) {
                 Text(
-                    "Two-factor authentication is supported",
+                    "Sign In",
                     style = TextStyle(
                         fontFamily = PoppinsFamily,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.5.sp,
                     ),
-                    color = Color.White.copy(alpha = 0.4f),
                 )
-            } else {
+            }
+
+            infoMessage?.let {
+                Spacer(Modifier.height(14.dp))
                 Text(
-                    "Enter the confirmation code sent to your email",
+                    text = it,
+                    color = IFoxyYellow,
+                    textAlign = TextAlign.Center,
                     style = TextStyle(
                         fontFamily = PoppinsFamily,
                         fontWeight = FontWeight.Medium,
-                        fontSize = 15.sp,
+                        fontSize = 13.sp,
                     ),
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(14.dp))
-                TextField(
-                    value = code,
-                    onValueChange = {
-                        code = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "")
-                    },
-                    label = { Text("Confirmation code") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.NumberPassword,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            doSubmitTwoFactor()
-                        }
-                    ),
-                    colors = fieldColors,
-                    shape = fieldShape,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(20.dp))
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        doSubmitTwoFactor()
-                    },
-                    enabled = !isLoading && code.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = IFoxyYellow,
-                        contentColor = IFoxyInk,
-                        disabledContainerColor = IFoxyYellow.copy(alpha = 0.4f),
-                        disabledContentColor = IFoxyInk.copy(alpha = 0.6f),
-                    ),
-                    shape = RoundedCornerShape(27.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = IFoxyInk,
-                        )
-                    } else {
-                        Text(
-                            "Verify",
-                            style = TextStyle(
-                                fontFamily = PoppinsFamily,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.5.sp,
-                            ),
-                        )
-                    }
-                }
+                        .padding(horizontal = 8.dp),
+                )
             }
-
             errorMessage?.let {
                 Spacer(Modifier.height(14.dp))
                 Text(
@@ -411,6 +264,28 @@ fun LoginScreen(
                         .padding(horizontal = 8.dp),
                 )
             }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Two-factor authentication is supported — Mozilla's page asks for the code itself",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
+                ),
+                color = Color.White.copy(alpha = 0.4f),
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Firefox accounts that sign in with Google or Apple cannot be used on the in-app page",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
+                ),
+                color = Color.White.copy(alpha = 0.4f),
+                textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(32.dp))
         }
     }
