@@ -151,8 +151,10 @@ impl WinRegistry {
                 // 2-byte aligned, so the cast was formally UB (wave-3
                 // review, L-12).
                 let units: Vec<u16> = buf
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| u16::from_le_bytes(*pair))
                     .collect();
                 // Trim trailing null characters
                 let trimmed = match units.iter().position(|&c| c == 0) {
