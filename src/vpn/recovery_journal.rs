@@ -3,6 +3,7 @@ use crate::vpn::system_proxy::ProxySettingsBackup;
 use crate::vpn::routing::RouteDefinition;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -244,13 +245,17 @@ impl RecoveryJournal {
 
         let json = serde_json::to_string_pretty(&self.state)?;
         let temp_path = self.path.with_extension("tmp");
-        fs::write(&temp_path, json.as_bytes())?;
         // fsync before the rename: the write-ahead guarantee the docs
         // claim ("flushed to disk prior to executing the system API
         // call") is only real if the bytes survive a power loss, not
-        // just a process crash (external review, S6c).
+        // just a process crash (external review, S6c). The write and
+        // the fsync share ONE write handle: on Windows, FlushFileBuffers
+        // on a read-only handle fails with Access Denied (code 5), which
+        // broke every journal test on Windows CI (run 41262884808) while
+        // Linux fsync on a read fd worked fine.
         {
-            let tmp = fs::File::open(&temp_path)?;
+            let mut tmp = fs::File::create(&temp_path)?;
+            tmp.write_all(json.as_bytes())?;
             tmp.sync_all()?;
         }
         fs::rename(&temp_path, &self.path)?;
