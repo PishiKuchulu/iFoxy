@@ -20,6 +20,22 @@ pub fn clear_stored_session() {
     let _ = SecretStore::new().clear();
 }
 
+/// A pending two-factor login: the FxA session token plus the
+/// bookkeeping the old bare tuple lacked (wave-3 review, M-6) — an
+/// expiry and an attempt cap, so a pending session cannot be probed
+/// forever while the app runs.
+pub struct PendingTwoFactor {
+    pub session_token: String,
+    pub email: String,
+    pub started_at: std::time::Instant,
+    pub attempts: u32,
+}
+
+/// How long a pending 2FA login stays usable.
+pub const PENDING_2FA_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Failed verification attempts before the pending session is dropped.
+pub const MAX_2FA_ATTEMPTS: u32 = 5;
+
 pub struct AppState {
     pub vpn_service: Arc<VpnService>,
     pub fxa_client: Arc<FxaClient>,
@@ -27,7 +43,7 @@ pub struct AppState {
     pub server_client: Arc<ServerListClient>,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub session: Arc<Mutex<Option<StoredSecrets>>>,
-    pub pending_2fa: Arc<Mutex<Option<(String, String)>>>, // (session_token, email)
+    pub pending_2fa: Arc<Mutex<Option<PendingTwoFactor>>>,
     pub cached_countries: Arc<Mutex<Vec<VpnCountry>>>,
 }
 
@@ -119,13 +135,13 @@ impl AppState {
                 // the stale AppState.session as authenticated (external
                 // review, S7). Sync the cached session with it.
                 if self.token_provider.current_tokens().await.is_none() {
-                    *self.session.lock().unwrap() = None;
+                    *self.session.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     return json!({
                         "is_authenticated": false,
                         "email": null,
                     });
                 }
-                let session = self.session.lock().unwrap().clone();
+                let session = self.session.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 match session {
                     Some(s) => json!({
                         "is_authenticated": true,
@@ -159,7 +175,13 @@ impl AppState {
                 password.zeroize();
                 match login_result {
                     Ok(LoginResult::Requires2Fa { session_token }) => {
-                        *self.pending_2fa.lock().unwrap() = Some((session_token, email.clone()));
+                        *self.pending_2fa.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(PendingTwoFactor {
+                                session_token,
+                                email: email.clone(),
+                                started_at: std::time::Instant::now(),
+                                attempts: 0,
+                            });
                         self.log("Two-factor confirmation code sent to email");
                         json!({
                             "success": true,
@@ -177,7 +199,7 @@ impl AppState {
                         };
                         save_stored_session(&session);
                         let _ = self.token_provider.set_tokens(tokens, &email).await;
-                        *self.session.lock().unwrap() = Some(session);
+                        *self.session.lock().unwrap_or_else(|p| p.into_inner()) = Some(session);
                         self.log(&format!("Successfully authenticated {}", email));
                         json!({
                             "success": true,
@@ -198,12 +220,34 @@ impl AppState {
                     .unwrap_or_default()
                     .trim()
                     .to_string();
-                let pending = self.pending_2fa.lock().unwrap().clone();
+                let pending = {
+                    let mut lock = self.pending_2fa.lock().unwrap_or_else(|p| p.into_inner());
+                    match lock.take() {
+                        Some(p) if p.started_at.elapsed() > PENDING_2FA_TTL => {
+                            // Expired: drop it (zeroized) and make the
+                            // user sign in again (M-6).
+                            let mut p = p;
+                            p.session_token.zeroize();
+                            None
+                        }
+                        Some(p) => {
+                            let snapshot = PendingTwoFactor {
+                                session_token: p.session_token.clone(),
+                                email: p.email.clone(),
+                                started_at: p.started_at,
+                                attempts: p.attempts,
+                            };
+                            *lock = Some(p);
+                            Some(snapshot)
+                        }
+                        None => None,
+                    }
+                };
 
                 let (session_token, email) = match pending {
-                    Some(p) => p,
+                    Some(p) => (p.session_token, p.email),
                     None => {
-                        return json!({ "success": false, "error": "No pending 2FA login session" })
+                        return json!({ "success": false, "error": "No pending 2FA login session (it may have expired); please sign in again" })
                     }
                 };
 
@@ -220,15 +264,48 @@ impl AppState {
                         };
                         save_stored_session(&session);
                         let _ = self.token_provider.set_tokens(tokens, &email).await;
-                        *self.session.lock().unwrap() = Some(session);
-                        *self.pending_2fa.lock().unwrap() = None;
+                        *self.session.lock().unwrap_or_else(|p| p.into_inner()) = Some(session);
+                        if let Some(mut p) = self
+                            .pending_2fa
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .take()
+                        {
+                            p.session_token.zeroize();
+                        }
                         self.log(&format!("2FA verified successfully for {}", email));
                         json!({ "success": true, "email": email })
                     }
                     Err(e) => {
                         let err_msg = format_auth_error(e);
-                        self.log(&format!("2FA verification error: {}", err_msg));
-                        json!({ "success": false, "error": err_msg })
+                        // Attempt cap (M-6): a failed code consumes one
+                        // of MAX_2FA_ATTEMPTS tries; at the cap the
+                        // pending session is dropped (zeroized).
+                        let exhausted = {
+                            let mut lock =
+                                self.pending_2fa.lock().unwrap_or_else(|p| p.into_inner());
+                            match lock.as_mut() {
+                                Some(p) => {
+                                    p.attempts += 1;
+                                    if p.attempts >= MAX_2FA_ATTEMPTS {
+                                        if let Some(mut dropped) = lock.take() {
+                                            dropped.session_token.zeroize();
+                                        }
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                None => false,
+                            }
+                        };
+                        if exhausted {
+                            self.log("2FA attempts exhausted; pending login dropped");
+                            json!({ "success": false, "error": "Too many incorrect codes. Please sign in again." })
+                        } else {
+                            self.log(&format!("2FA verification error: {}", err_msg));
+                            json!({ "success": false, "error": err_msg })
+                        }
                     }
                 }
             }
@@ -241,7 +318,7 @@ impl AppState {
                     .await
                     .unwrap_or(false);
                 clear_stored_session();
-                *self.session.lock().unwrap() = None;
+                *self.session.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 if revoked {
                     self.log("Signed out from Firefox account, revoked server token, and cleared credentials");
                 } else {
@@ -252,7 +329,7 @@ impl AppState {
             "fetch_server_list" => {
                 match self.server_client.fetch_countries().await {
                     Ok(countries) => {
-                        *self.cached_countries.lock().unwrap() = countries.clone();
+                        *self.cached_countries.lock().unwrap_or_else(|p| p.into_inner()) = countries.clone();
                         json!({
                             "success": true,
                             "countries": countries,
@@ -260,7 +337,7 @@ impl AppState {
                     }
                     Err(e) => {
                         // Return cached or defaults
-                        let cached = self.cached_countries.lock().unwrap().clone();
+                        let cached = self.cached_countries.lock().unwrap_or_else(|p| p.into_inner()).clone();
                         if !cached.is_empty() {
                             json!({ "success": true, "countries": cached })
                         } else {
@@ -284,24 +361,27 @@ impl AppState {
                 let city_code = payload["city_code"].as_str().unwrap_or("AUTO");
 
                 // Get candidates
-                let mut countries = self.cached_countries.lock().unwrap().clone();
+                let mut countries = self.cached_countries.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 if countries.is_empty() {
                     if let Ok(fetched) = self.server_client.fetch_countries().await {
                         countries = fetched;
-                        *self.cached_countries.lock().unwrap() = countries.clone();
+                        *self.cached_countries.lock().unwrap_or_else(|p| p.into_inner()) = countries.clone();
                     }
                 }
 
                 let mut candidates = if country_code.eq_ignore_ascii_case("REC") {
-                    // Try to pick Frankfurt DE or US or first available
-                    let de_candidates = ServerListClient::candidates_for_country(&countries, "DE");
-                    if !de_candidates.is_empty() {
-                        de_candidates
-                    } else if let Some(country) = countries.first() {
-                        ServerListClient::candidates_for_country(&countries, &country.code)
-                    } else {
-                        Vec::new()
+                    // "Recommended" = fastest edge anywhere: gather every
+                    // country's candidates and let latency probing rank
+                    // them (wave-3 review, H-4 — this used to hardcode
+                    // Germany and never fall back).
+                    let mut all = Vec::new();
+                    for country in &countries {
+                        all.extend(ServerListClient::candidates_for_country(
+                            &countries,
+                            &country.code,
+                        ));
                     }
+                    all
                 } else if !city_code.eq_ignore_ascii_case("AUTO") {
                     ServerListClient::candidates_for_city(&countries, country_code, city_code)
                 } else {
@@ -328,7 +408,16 @@ impl AppState {
                 )
                 .await;
 
-                let candidate = candidates.remove(0);
+                let mut ranked =
+                    ServerListClient::select_failover_candidates(candidates).into_iter();
+                let candidate = ranked.next().expect("candidates checked non-empty above");
+                let failover_candidates: Vec<_> = ranked.take(7).collect();
+                if !failover_candidates.is_empty() {
+                    self.log(&format!(
+                        "Failover: {} alternate edge(s) queued for reconnect",
+                        failover_candidates.len()
+                    ));
+                }
                 if let Some(lat) = candidate.latency_ms {
                     self.log(&format!(
                         "Selected fastest candidate: {} ({}:{}) with latency {}ms",
@@ -354,6 +443,7 @@ impl AppState {
                         &access_token,
                         mode,
                         Some(self.token_provider.clone()),
+                        failover_candidates,
                     )
                     .await
                 {
@@ -374,9 +464,19 @@ impl AppState {
             "disconnect_vpn" => {
                 self.log("Disconnecting VPN tunnel...");
                 self.vpn_service.cancel();
-                let _ = self.vpn_service.disconnect();
-                self.log("VPN Disconnected cleanly.");
-                json!({ "success": true })
+                // Only claim a clean disconnect when the Disconnect
+                // command actually reached the actor (M-13).
+                match self.vpn_service.disconnect() {
+                    Ok(()) => {
+                        self.log("VPN Disconnected cleanly.");
+                        json!({ "success": true })
+                    }
+                    Err(e) => {
+                        let err_msg = format!("Disconnect failed: {}", e);
+                        self.log(&err_msg);
+                        json!({ "success": false, "error": err_msg })
+                    }
+                }
             }
             "get_vpn_status" => {
                 let vpn_state = self.vpn_service.get_state();
@@ -446,7 +546,7 @@ impl AppState {
                 }
             }
             "get_logs" => {
-                let logs = self.logs.lock().unwrap().clone();
+                let logs = self.logs.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 json!({ "logs": logs })
             }
             _ => json!({ "success": false, "error": "Unknown action" }),
@@ -474,6 +574,14 @@ pub async fn bind_ui_server(preferred_port: u16) -> Result<(TcpListener, u16), s
         let port = listener.local_addr()?.port();
         return Ok((listener, port));
     }
+    // The fixed port was taken (another process, or a leftover
+    // instance): fall back to a random port, but say so loudly — a
+    // silent fallback hides a possible local squatter (M-3). The
+    // control API's random token remains the actual auth boundary.
+    tracing::warn!(
+        "UI port {} unavailable; falling back to a random port",
+        preferred_port
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     Ok((listener, port))

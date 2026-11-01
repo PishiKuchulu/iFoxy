@@ -73,8 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::new(e));
     }
 
-    // 1. Initialize rolling file logger with bounded size (R-13, H10)
-    let _logger_guard = ifoxy_windows::logging::init_rolling_logger();
+    // 1. Initialize rolling file logger with bounded size (R-13, H10).
+    // Global subscriber: events from every thread (incl. Tokio workers)
+    // reach ifoxy.log (wave-3 review, C-4).
+    let _logger_installed = ifoxy_windows::logging::init_rolling_logger();
 
     // 2. Elevate process if needed for Wintun adapter and system routing
     // Elevate BEFORE acquiring single instance mutex to prevent handover deadlock (R-14, M10)
@@ -128,7 +130,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) {
         Some(guard) => guard,
         None => {
-            eprintln!("Another instance of iFoxy is already running.");
+            // Visible dialog, not just stderr: the Windows build is a
+            // GUI-subsystem app where eprintln goes nowhere (wave-3
+            // review, L-15).
+            show_fatal_error("Another instance of iFoxy is already running.");
             return Ok(());
         }
     };

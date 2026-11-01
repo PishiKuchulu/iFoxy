@@ -42,6 +42,10 @@ pub struct RollingFileWriter {
     max_files: usize,
     current_file: Option<File>,
     current_size: u64,
+    /// Partial line buffered across `write()` calls. The tracing fmt layer
+    /// may split one event over several writes; redaction and rotation must
+    /// only ever see complete lines (wave-3 review, C-4).
+    pending_line: String,
 }
 
 impl RollingFileWriter {
@@ -57,6 +61,7 @@ impl RollingFileWriter {
             max_files,
             current_file: Some(current_file),
             current_size,
+            pending_line: String::new(),
         })
     }
 
@@ -92,6 +97,29 @@ impl RollingFileWriter {
         Ok(())
     }
 
+    /// Feed a raw chunk from the tracing fmt layer. Complete lines are
+    /// written out (redacted, rotated); a trailing partial line stays
+    /// buffered until its newline arrives or `flush_pending` is called.
+    pub fn write_fmt_chunk(&mut self, chunk: &str) -> io::Result<()> {
+        self.pending_line.push_str(chunk);
+        while let Some(pos) = self.pending_line.find('\n') {
+            let line: String = self.pending_line.drain(..=pos).collect();
+            let line = line.trim_end_matches(['\n', '\r']);
+            self.write_log_line(line)?;
+        }
+        Ok(())
+    }
+
+    /// Write out any buffered partial line (used by `flush`).
+    pub fn flush_pending(&mut self) -> io::Result<()> {
+        if !self.pending_line.is_empty() {
+            let line = std::mem::take(&mut self.pending_line);
+            let line = line.trim_end_matches(['\n', '\r']).to_string();
+            self.write_log_line(&line)?;
+        }
+        Ok(())
+    }
+
     pub fn write_log_line(&mut self, line: &str) -> io::Result<()> {
         let redacted = redact_sensitive_text(line);
         let bytes = redacted.as_bytes();
@@ -116,13 +144,20 @@ pub struct SharedRollingLogger(pub Arc<Mutex<RollingFileWriter>>);
 impl io::Write for SharedRollingLogger {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let text = String::from_utf8_lossy(buf);
-        let mut writer = self.0.lock().unwrap();
-        writer.write_log_line(&text)?;
+        let mut writer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        writer.write_fmt_chunk(&text)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        let mut writer = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        writer.flush_pending()
     }
 }
 
@@ -130,7 +165,16 @@ pub fn default_log_path() -> PathBuf {
     crate::paths::state_dir().join("logs").join("ifoxy.log")
 }
 
-pub fn init_rolling_logger() -> Option<tracing::subscriber::DefaultGuard> {
+/// Install the rolling file logger as the GLOBAL tracing subscriber.
+///
+/// Wave-3 review C-4: the previous implementation used
+/// `tracing::subscriber::set_default`, which is thread-local — events
+/// emitted on Tokio worker threads never reached `ifoxy.log`, so the file
+/// log (and its redaction) silently missed most runtime events. The global
+/// default applies to every thread. Returns true when the subscriber was
+/// installed (false when the log file could not be opened or a global
+/// subscriber was already set).
+pub fn init_rolling_logger() -> bool {
     let log_path = default_log_path();
     if let Ok(writer) =
         RollingFileWriter::new(log_path, DEFAULT_MAX_LOG_SIZE, DEFAULT_MAX_LOG_FILES)
@@ -140,8 +184,8 @@ pub fn init_rolling_logger() -> Option<tracing::subscriber::DefaultGuard> {
             .with_writer(move || shared.clone())
             .with_ansi(false)
             .finish();
-        Some(tracing::subscriber::set_default(subscriber))
+        tracing::subscriber::set_global_default(subscriber).is_ok()
     } else {
-        None
+        false
     }
 }

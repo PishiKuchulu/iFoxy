@@ -203,7 +203,17 @@ const WINTRUST_ACTION_GENERIC_VERIFY_V2: windows_sys::core::GUID = windows_sys::
 #[cfg(windows)]
 const WTD_UI_NONE: u32 = 2;
 #[cfg(windows)]
-const WTD_REVOKE_NONE: u32 = 0;
+const WTD_REVOKE_WHOLE_CHAIN: u32 = 1;
+/// CERT_E_REVOKED: the signing certificate has been revoked.
+#[cfg(windows)]
+const CERT_E_REVOKED: i32 = 0x800B010C_u32 as i32;
+/// CRYPT_E_NO_REVOCATION_CHECK / CRYPT_E_REVOCATION_OFFLINE: revocation
+/// status could not be determined (e.g. no network) — distinct from a
+/// positive revocation finding.
+#[cfg(windows)]
+const CRYPT_E_NO_REVOCATION_CHECK: i32 = 0x80092012_u32 as i32;
+#[cfg(windows)]
+const CRYPT_E_REVOCATION_OFFLINE: i32 = 0x80092013_u32 as i32;
 #[cfg(windows)]
 const WTD_CHOICE_FILE: u32 = 1;
 #[cfg(windows)]
@@ -241,7 +251,9 @@ pub fn verify_authenticode_signature(path: &Path) -> Result<(), SecurityError> {
     trust_data.dw_union_choice = WTD_CHOICE_FILE;
     trust_data.p_file = &mut file_info;
     trust_data.dw_ui_choice = WTD_UI_NONE;
-    trust_data.fdw_revocation_checks = WTD_REVOKE_NONE;
+    // Check revocation for the whole chain (wave-3 review, L-18): with
+    // WTD_REVOKE_NONE a revoked-but-otherwise-valid certificate passed.
+    trust_data.fdw_revocation_checks = WTD_REVOKE_WHOLE_CHAIN;
     trust_data.dw_state_action = WTD_STATEACTION_VERIFY;
     trust_data.dw_prov_flags = WTD_SAFER_FLAG;
 
@@ -264,10 +276,21 @@ pub fn verify_authenticode_signature(path: &Path) -> Result<(), SecurityError> {
         );
     }
 
-    if status == 0 {
-        Ok(())
-    } else {
-        Err(SecurityError::AuthenticodeFailed(status as u32))
+    match status {
+        0 => Ok(()),
+        CERT_E_REVOKED => Err(SecurityError::AuthenticodeFailed(status as u32)),
+        // Revocation could not be checked at all (offline machine, no
+        // CRL/OCSP reachable): accept, like mainstream installers do —
+        // failing closed here would brick the app on every offline
+        // Windows machine — but log it so the gap is visible.
+        CRYPT_E_NO_REVOCATION_CHECK | CRYPT_E_REVOCATION_OFFLINE => {
+            tracing::warn!(
+                "Authenticode revocation status for {} could not be checked (offline); accepting signature",
+                path.display()
+            );
+            Ok(())
+        }
+        _ => Err(SecurityError::AuthenticodeFailed(status as u32)),
     }
 }
 
@@ -379,6 +402,8 @@ pub fn acquire_single_instance(_mutex_name: &str) -> Option<SingleInstanceGuard>
     Some(SingleInstanceGuard {})
 }
 
-pub fn check_single_instance(mutex_name: &str) -> bool {
-    acquire_single_instance(mutex_name).is_some()
-}
+// (A former `check_single_instance` probe was removed in the wave-3
+// fixes, M-4: it acquired the lock and dropped the guard in the same
+// expression, so it always reported "free" and invited check-then-act
+// races. Callers must hold the guard from `acquire_single_instance`
+// for the process lifetime, as main.rs does.)

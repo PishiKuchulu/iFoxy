@@ -124,7 +124,7 @@ pub async fn read_http_request<R: AsyncReadExt + Unpin>(
     .map_err(|_| "408 Request Timeout".to_string())?
 }
 
-pub const CSP_HEADER_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-ancestors 'none';";
+pub const CSP_HEADER_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none';";
 
 /// Build a complete HTTP response whose Content-Length is DERIVED
 /// from the body. Several hand-written literals in this server carried
@@ -198,8 +198,11 @@ pub async fn run_hardened_ui_server(
             if let Some(origin) = req.headers.get("origin") {
                 let valid_orig_1 = format!("http://127.0.0.1:{}", port);
                 let valid_orig_2 = format!("http://localhost:{}", port);
-                let valid_orig_3 = "null"; // local file / webview origin
-                if origin != &valid_orig_1 && origin != &valid_orig_2 && origin != valid_orig_3 {
+                // "null" is NOT accepted (wave-3 review, M-2): the UI is
+                // served from this very server, so its Origin is always
+                // one of the two values above; an opaque "null" origin
+                // is what sandboxed attacker contexts send.
+                if origin != &valid_orig_1 && origin != &valid_orig_2 {
                     let resp = respond("403 Forbidden", "text/plain", "Cross-Origin Forbidden");
                     let _ = socket.write_all(resp.as_bytes()).await;
                     return;
@@ -234,7 +237,7 @@ pub async fn run_hardened_ui_server(
                 );
                 let clean_html = INDEX_HTML.replace("<head>", &format!("<head>\n{}", csp_tag));
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Security-Policy: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Security-Policy: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     CSP_HEADER_VALUE,
                     clean_html.len(),
                     clean_html
