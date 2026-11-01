@@ -28,6 +28,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,11 +45,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.pishi.ifoxy.data.AppLogger
+import com.pishi.ifoxy.data.BrowserTokenRequest
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import java.lang.ref.WeakReference
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import org.json.JSONObject
 
 private const val TAG = "BrowserLogin"
@@ -202,6 +209,20 @@ internal class WebChannelBridge(
         notifySessionToken(token)
     }
 
+    /** One-shot receiver for the in-page token exchange (see
+     *  runTokenExchangeInPage). Armed only while an exchange the app
+     *  itself started is in flight; the payload is validated as an
+     *  FxA token response before it is used. */
+    @Volatile
+    var tokenExchangeCallback: ((String) -> Unit)? = null
+
+    @JavascriptInterface
+    fun onTokenExchangeResult(payload: String) {
+        val callback = tokenExchangeCallback
+        tokenExchangeCallback = null
+        callback?.invoke(payload)
+    }
+
     @JavascriptInterface
     fun onMessage(payload: String, originUrl: String) {
         val host = runCatching { Uri.parse(originUrl).host?.lowercase() }.getOrNull()
@@ -297,14 +318,57 @@ private fun isSuccessUrl(url: String?): Boolean {
  * WebChannel, [onSessionCaptured] receives the session token.
  */
 @SuppressLint("SetJavaScriptEnabled")
+/** Executes a Hawk-signed FxA token request inside the signed-in page
+ *  itself: the browser's network stack already passed Mozilla's bot
+ *  protection, so the exchange rides that trust instead of fighting
+ *  the native client's HTTP 406. Returns the parsed token response on
+ *  HTTP 200, or null on any failure (the caller falls back to the
+ *  native exchange). */
+internal suspend fun runTokenExchangeInPage(
+    webView: WebView,
+    bridge: WebChannelBridge,
+    spec: BrowserTokenRequest,
+): JSONObject? {
+    val payload = withTimeoutOrNull(25_000) {
+        suspendCancellableCoroutine<String> { cont ->
+            bridge.tokenExchangeCallback = { result ->
+                if (cont.isActive) cont.resume(result)
+            }
+            cont.invokeOnCancellation { bridge.tokenExchangeCallback = null }
+            val script = "(function(){try{fetch(" + JSONObject.quote(spec.url) +
+                ",{method:'POST',headers:{'Content-Type':'application/json','Authorization':" +
+                JSONObject.quote(spec.authorization) +
+                "},body:" + JSONObject.quote(spec.bodyJson) +
+                ",credentials:'omit'}).then(function(r){return r.text().then(function(t){" +
+                "window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:r.status,body:t}));});})" +
+                ".catch(function(e){window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:0,body:String(e)}));});" +
+                "}catch(e){window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:-1,body:String(e)}));}})();"
+            webView.post { webView.evaluateJavascript(script, null) }
+        }
+    } ?: return null
+    val outer = runCatching { JSONObject(payload) }.getOrNull() ?: return null
+    val status = outer.optInt("status")
+    if (status != 200) {
+        AppLogger.w(
+            "BrowserLoginScreen",
+            "in-page token exchange failed: status=$status body=${outer.optString("body").take(200)}",
+        )
+        return null
+    }
+    AppLogger.i("BrowserLoginScreen", "in-page token exchange succeeded (HTTP 200)")
+    return runCatching { JSONObject(outer.optString("body")) }.getOrNull()
+        ?.takeIf { it.optString("access_token").isNotBlank() }
+}
+
 @Composable
 fun BrowserLoginScreen(
     startUrl: String,
     busy: Boolean,
     errorMessage: String? = null,
-    onSessionCaptured: (String) -> Unit,
+    onSessionCaptured: (String, JSONObject?) -> Unit,
     onCanceled: () -> Unit,
     onOpenLogs: () -> Unit = {},
+    exchangeToken: (suspend (String, WebView, WebChannelBridge) -> JSONObject?)? = null,
 ) {
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var bridgeInstance by remember { mutableStateOf<WebChannelBridge?>(null) }
@@ -313,18 +377,41 @@ fun BrowserLoginScreen(
     var pageLoaded by remember { mutableStateOf(false) }
     val currentOnSession by rememberUpdatedState(onSessionCaptured)
     val currentOnCanceled by rememberUpdatedState(onCanceled)
+    val currentExchange by rememberUpdatedState(exchangeToken)
+    var exchanging by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(errorMessage) {
+        if (errorMessage != null) exchanging = false
+    }
 
     BackHandler(enabled = true) {
         if (webViewInstance?.canGoBack() == true) {
             webViewInstance?.goBack()
-        } else if (!busy) {
+        } else if (!busy && !exchanging) {
             currentOnCanceled()
         }
     }
 
     fun handleSession(token: String) {
-        if (busy) return
-        currentOnSession(token)
+        if (busy || exchanging) return
+        val exchange = currentExchange
+        val view = webViewInstance
+        val bridge = bridgeInstance
+        if (exchange == null || view == null || bridge == null) {
+            currentOnSession(token, null)
+            return
+        }
+        // Preferred path: exchange the session token for OAuth tokens
+        // inside the signed-in page (trusted network context); a null
+        // result tells the caller to run the native exchange instead.
+        exchanging = true
+        scope.launch {
+            val json = runCatching { exchange(token, view, bridge) }
+                .onFailure { AppLogger.w("BrowserLoginScreen", "in-page token exchange threw", it) }
+                .getOrNull()
+            currentOnSession(token, json)
+        }
     }
 
     Column(
@@ -345,11 +432,11 @@ fun BrowserLoginScreen(
                 onClick = {
                     if (webViewInstance?.canGoBack() == true) {
                         webViewInstance?.goBack()
-                    } else if (!busy) {
+                    } else if (!busy && !exchanging) {
                         currentOnCanceled()
                     }
                 },
-                enabled = !busy,
+                enabled = !busy && !exchanging,
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
@@ -379,7 +466,7 @@ fun BrowserLoginScreen(
                 )
             }
         }
-        if (busy) {
+        if (busy || exchanging) {
             LinearProgressIndicator(
                 color = IFoxyYellow,
                 modifier = Modifier.fillMaxWidth(),

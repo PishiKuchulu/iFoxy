@@ -50,6 +50,7 @@ import com.pishi.ifoxy.ui.theme.IFoxyNeonOrange
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * Sign in, per the Penpot design (04): dark brand screen, glowing orange
@@ -76,13 +77,13 @@ fun LoginScreen(
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    fun handleBrowserSession(sessionToken: String) {
+    fun handleBrowserSession(sessionToken: String, preExchangedToken: JSONObject?) {
         if (completingBrowserLogin) return
         completingBrowserLogin = true
         errorMessage = null
         infoMessage = null
         scope.launch {
-            val result = authRepository.completeBrowserLogin(sessionToken)
+            val result = authRepository.completeBrowserLogin(sessionToken, preExchangedToken)
             completingBrowserLogin = false
             result.onSuccess {
                 browserStartUrl = null
@@ -115,6 +116,13 @@ fun LoginScreen(
                 errorMessage = null
             },
             onOpenLogs = onOpenLogs,
+            exchangeToken = { token, webView, bridge ->
+                runTokenExchangeInPage(
+                    webView,
+                    bridge,
+                    authRepository.buildBrowserTokenRequest(token),
+                )
+            },
         )
         return
     }
