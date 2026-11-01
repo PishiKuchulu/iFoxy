@@ -115,6 +115,7 @@ impl FxaClient {
         headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+        let mut body = body;
         let res = self
             .client
             .post(&url)
@@ -122,6 +123,11 @@ impl FxaClient {
             .json(&body)
             .send()
             .await?;
+        // The request has been serialized and sent; shrink the authPW
+        // copy inside the JSON body to an empty string so it does not
+        // sit in memory for the rest of the login flow (M-5; the
+        // serialized copy inside the HTTP stack is beyond our reach).
+        body["authPW"] = serde_json::Value::String(String::new());
 
         let status = res.status();
         crate::crypto::hawk::check_response_for_clock_skew(res.headers());
@@ -159,8 +165,9 @@ impl FxaClient {
         let body = serde_json::json!({ "code": code });
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
 
-        let (token_id, hmac_key) = derive_hawk_credentials(session_token)?;
+        let (token_id, mut hmac_key) = derive_hawk_credentials(session_token)?;
         let hawk_header = generate_hawk_header("POST", &url, &token_id, &hmac_key, &body_bytes)?;
+        hmac_key.zeroize();
 
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
@@ -201,8 +208,9 @@ impl FxaClient {
         });
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
 
-        let (token_id, hmac_key) = derive_hawk_credentials(session_token)?;
+        let (token_id, mut hmac_key) = derive_hawk_credentials(session_token)?;
         let hawk_header = generate_hawk_header("POST", &url, &token_id, &hmac_key, &body_bytes)?;
+        hmac_key.zeroize();
 
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
