@@ -74,7 +74,7 @@ class QuickConnectTileService : TileService() {
 
     private fun updateTileState(state: ConnectionState) {
         val tile = qsTile ?: return
-        tile.icon = Icon.createWithResource(this, android.R.drawable.ic_lock_lock)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_widget_power)
         tile.label = getString(R.string.quick_connect)
         when (state) {
             ConnectionState.CONNECTED -> {
