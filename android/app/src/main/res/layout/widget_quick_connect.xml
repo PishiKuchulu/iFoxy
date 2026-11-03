@@ -23,4 +23,13 @@
         android:src="@android:drawable/ic_lock_lock"
         android:contentDescription="@string/quick_connect" />
 
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:textSize="11sp"
+        android:text="Disconnected" />
+
 </FrameLayout>
