@@ -436,6 +436,8 @@ impl AppState {
                     candidate.country_name, candidate.host, candidate.port, mode
                 ));
 
+                let chosen_latency_ms = candidate.latency_ms;
+
                 match self
                     .vpn_service
                     .start_connect(
@@ -449,7 +451,10 @@ impl AppState {
                 {
                     Ok(_) => {
                         self.log("Tunnel connection established successfully!");
-                        json!({ "success": true })
+                        match chosen_latency_ms {
+                            Some(lat) => json!({ "success": true, "latency_ms": lat }),
+                            None => json!({ "success": true }),
+                        }
                     }
                     Err(e) => {
                         let err_msg = match e {
