@@ -14,6 +14,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -405,7 +407,14 @@ fun AppUpdateDialog(controller: AppUpdateController) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(28.dp),
+                // Cap the height and scroll the content: on short
+                // viewports (landscape, split-screen) an unbounded
+                // column pushed the action buttons off-screen.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
@@ -516,15 +525,28 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                         }
                     }
                     // The expected hash, so it can be compared against
-                    // the release page out-of-band.
+                    // the release page out-of-band. Rendered in fixed
+                    // 16-character chunks, one per line: the full 64-char
+                    // digest is wider than the dialog and would otherwise
+                    // wrap mid-hash, which makes visual comparison hard.
                     info.sha256?.let { sha ->
-                        Text(
-                            "SHA-256: $sha",
-                            color = UpdateLabel,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                "SHA-256:",
+                                color = UpdateLabel,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                            sha.chunked(16).forEach { chunk ->
+                                Text(
+                                    chunk,
+                                    color = UpdateLabel,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
                     }
                 }
                 if (state is UpdateUiState.Downloading) {
