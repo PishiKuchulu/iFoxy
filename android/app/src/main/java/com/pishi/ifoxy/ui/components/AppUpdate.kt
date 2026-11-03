@@ -124,7 +124,9 @@ class AppUpdateController(private val appContext: Context) {
             } catch (error: Exception) {
                 // A failed check is NOT "up to date": surface it so the
                 // Settings row can say the check itself failed.
-                state = UpdateUiState.Failed("Couldn't check for updates")
+                state = UpdateUiState.Failed(
+                    "Couldn't check for updates (${error.message ?: "network error"})",
+                )
                 return@launch
             }
             state = if (found != null) {
