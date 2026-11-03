@@ -9,7 +9,7 @@
   
   --text-primary: #ffffff;
   --text-secondary: #9ea3be;
-  --text-tertiary: #686c87;
+  --text-tertiary: #8b8fb2;
   
   --accent-fox: #ff7a00;
   --accent-gradient: linear-gradient(135deg, #ff9431 0%, #ff5200 100%);
@@ -36,7 +36,7 @@
   
   --text-primary: #12131d;
   --text-secondary: #5a5f78;
-  --text-tertiary: #9ea3be;
+  --text-tertiary: #5d6182;
   
   --state-disconnected: #9ea3be;
   --state-disconnected-glow: rgba(158, 163, 190, 0.2);
@@ -94,12 +94,6 @@ body {
   gap: 10px;
 }
 
-.brand-icon {
-  width: 28px;
-  height: 28px;
-  filter: drop-shadow(0 2px 6px var(--accent-glow));
-}
-
 /* Horizontal fox + iFoxy banner artwork in the top bar. The banner PNG is
    696x358; constrain by height so it fits the titlebar. */
 .brand-banner {
@@ -108,21 +102,6 @@ body {
   max-width: 200px;
   object-fit: contain;
   filter: drop-shadow(0 2px 6px var(--accent-glow));
-}
-
-.brand-title {
-  font-weight: 700;
-  font-size: 1.15rem;
-  letter-spacing: -0.3px;
-  background: linear-gradient(135deg, #ffffff 40%, #ff9431 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-[data-theme="light"] .brand-title {
-  background: linear-gradient(135deg, #12131d 40%, #ff5200 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
 
 .header-actions {
@@ -565,7 +544,7 @@ body {
   background: var(--accent-gradient);
   border: none;
   border-radius: var(--button-radius);
-  color: #ffffff;
+  color: #1b1c21;
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
@@ -660,13 +639,6 @@ body {
   50% { transform: translateY(-8px); }
 }
 
-.splash-title {
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: -0.5px;
-  margin-bottom: 6px;
-}
-
 .splash-sub {
   color: var(--text-secondary);
   font-size: 0.95rem;
@@ -701,12 +673,6 @@ body {
   align-items: center;
   gap: 12px;
   margin-bottom: 28px;
-}
-
-.login-logo {
-  width: 44px;
-  height: 44px;
-  filter: drop-shadow(0 4px 12px var(--accent-glow));
 }
 
 /* Text wordmark on the login screen (385x155 PNG). Height-constrained so the
@@ -747,7 +713,7 @@ body {
 .login-error-banner {
   background: rgba(255, 71, 87, 0.15);
   border: 1px solid rgba(255, 71, 87, 0.3);
-  color: #ff4757;
+  color: #ff8291;
   padding: 10px 14px;
   border-radius: 10px;
   font-size: 0.84rem;
@@ -871,6 +837,12 @@ body {
   font-weight: 600;
 }
 
+/* Light theme: the neon green badge text is unreadable on white (F6);
+   use a dark green there instead. */
+[data-theme="light"] .badge-status {
+  color: #0a7d43;
+}
+
 .btn-logout {
   width: 100%;
   padding: 14px;
@@ -902,4 +874,157 @@ body {
   overflow-y: auto;
   max-height: 420px;
   white-space: pre-wrap;
+}
+
+/* ==================== Fix-wave additions ==================== */
+
+/* Visible focus for the server search box (F15) */
+.search-box:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(255, 122, 0, 0.2);
+}
+
+/* Keyboard focus visibility for the div-based controls (F4) */
+.power-button-wrapper:focus-visible,
+.location-card:focus-visible,
+.proxy-row:focus-visible,
+.server-item:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* Selected server row marker (F16) */
+.server-item {
+  border: 1px solid transparent;
+}
+
+.server-item.selected {
+  background: rgba(255, 122, 0, 0.12);
+  border: 1px solid rgba(255, 122, 0, 0.55);
+}
+
+.server-item.selected::after {
+  content: '\2713';
+  color: var(--accent-fox);
+  font-weight: 700;
+  margin-left: 10px;
+}
+
+.server-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 12px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.server-empty {
+  padding: 24px 12px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.btn-mini {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-mini:hover {
+  border-color: rgba(255, 122, 0, 0.4);
+}
+
+.drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Backend log lines are dimmed slightly vs. UI log lines (F1) */
+.backend-logs div {
+  color: #7f8ca3;
+}
+
+/* Logs and the account email must be selectable/copyable (F20) */
+.logs-terminal,
+#settings-user-email {
+  user-select: text;
+}
+
+.login-note {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin-top: 14px;
+  text-align: left;
+}
+
+.settings-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.settings-caption {
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+  padding: 2px 0 4px;
+}
+
+.session-row {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  padding: 12px 20px;
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.session-row #session-duration {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.proxy-row {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+  padding: 12px 20px;
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.proxy-row:hover {
+  background: var(--bg-surface-elevated);
+}
+
+.proxy-endpoint {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.btn-logout:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
