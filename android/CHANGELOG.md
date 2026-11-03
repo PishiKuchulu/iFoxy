@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.29 (versionCode 66) - updater honesty fix
+
+- The in-app updater no longer claims "You're up to date" when the
+  update check itself fails at the HTTP level — most visibly
+  GitHub's unauthenticated rate limit (HTTP 403), which shared VPN
+  egress IPs hit routinely; that is how the live v1.0.28 release
+  stayed hidden from phones on 1.0.27. A non-successful response is
+  now a failed check, and the dialog shows the status code
+  ("Couldn't check for updates (HTTP 403)") instead of a false
+  up-to-date. Regression tests cover the status gate.
+
 ## 1.0.28 (versionCode 65) - UI/UX audit fix wave
 
 Fixes from a dedicated UI/UX audit of 1.0.27 (52 findings across

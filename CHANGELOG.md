@@ -1,5 +1,16 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.29 combined release - Android updater honesty fix
+
+Android-only fix (desktop unchanged, still 0.2.3): the in-app
+updater no longer reports "You're up to date" when the update
+check fails at the HTTP level — a GitHub rate-limit 403 on a
+shared VPN egress IP hid the v1.0.28 release from 1.0.27 phones.
+A failed check now surfaces as a failure with its status code.
+
+Android 1.0.29 (versionCode 66): see android/CHANGELOG.md.
+Supersedes v1.0.28.
+
 ## v1.0.28 combined release - UI/UX audit fix wave (both platforms)
 
 Desktop (still 0.2.3) changes from the UI/UX audit of 1.0.27:
