@@ -529,7 +529,7 @@ fun HomeScreen(
                                 if (now - lastPowerTapAtMs >= 600) {
                                     lastPowerTapAtMs = now
                                     if (state == ConnectionState.DISCONNECTED) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onRequestConnect()
                                     } else {
                                         onDisconnect()

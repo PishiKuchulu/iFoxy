@@ -140,6 +140,7 @@ fun SettingsScreen(
     var upstreamProxyPassword by remember { mutableStateOf(settingsStore.upstreamProxyPassword) }
     var excludedApps by remember { mutableStateOf(settingsStore.excludedApps) }
     var mtu by remember { mutableStateOf(settingsStore.mtu) }
+    var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
     var accountAlertsEnabled by remember { mutableStateOf(settingsStore.accountAlertsEnabled) }
     var themeMode by remember { mutableStateOf(themeController.mode) }
     var showThemeDialog by remember { mutableStateOf(false) }
@@ -201,7 +202,6 @@ fun SettingsScreen(
     var showUpstreamProxyAddressDialog by remember { mutableStateOf(false) }
     var showUpstreamProxyCredentialsDialog by remember { mutableStateOf(false) }
     var showSplitTunnelDialog by remember { mutableStateOf(false) }
-    var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
     var showTlsSplitDialog by remember { mutableStateOf(false) }
 
     if (showMtuDialog) {
