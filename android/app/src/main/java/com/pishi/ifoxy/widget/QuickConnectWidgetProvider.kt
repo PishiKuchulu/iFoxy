@@ -136,6 +136,27 @@ class QuickConnectWidgetProvider : AppWidgetProvider() {
             views.setImageViewResource(R.id.widget_background, bgRes)
             views.setImageViewResource(R.id.widget_button, android.R.drawable.ic_lock_lock)
             views.setInt(R.id.widget_button, "setColorFilter", iconColor)
+
+            // A text status under the button: the color of the padlock
+            // alone does not say WHICH state the tunnel is in, and the
+            // button's accessibility label must carry the state too.
+            val statusText = when (state) {
+                ConnectionState.CONNECTED -> {
+                    val countryName = runCatching {
+                        com.pishi.ifoxy.data.ProxyStateStore(context).load()?.countryName
+                    }.getOrNull()
+                    if (countryName.isNullOrBlank()) "Connected" else "Connected \u00B7 $countryName"
+                }
+                ConnectionState.CONNECTING -> "Connecting\u2026"
+                ConnectionState.DISCONNECTED -> "Disconnected"
+            }
+            views.setTextViewText(R.id.widget_status, statusText)
+            views.setTextColor(
+                R.id.widget_status,
+                if (isDark) 0xFFFFFFFF.toInt() else 0xFF1E1A1D.toInt(),
+            )
+            views.setContentDescription(R.id.widget_button, "Quick connect \u2014 $statusText")
+
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
     }
