@@ -1,5 +1,6 @@
 package com.pishi.ifoxy.ui.screens
 
+import android.os.SystemClock
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.EaseInOut
 import androidx.compose.animation.core.RepeatMode
@@ -26,7 +27,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -40,6 +43,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,6 +65,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -101,8 +107,9 @@ import java.util.Locale
  * iFoxy home, per the Penpot "iFoxy — Screens" design: the palette follows
  * the user's theme (light = brand yellow, dark = ink), the neon halo and
  * drifting world map run while connected (Motion & Glow spec: 90 s
- * connected / 120 s disconnected). The layout is fixed — no scrolling —
- * and the flag card is the only location entry point. All data is the
+ * connected / 120 s disconnected). The content column scrolls (the
+ * footer stays pinned) so large font scales cannot clip rows, and the
+ * flag card is the only location entry point. All data is the
  * app's real state — selected/last-used server, session bytes, ping,
  * exit IP and the Guardian quota.
  */
@@ -159,6 +166,7 @@ fun HomeScreen(
     var quotaRemaining by remember { mutableStateOf(app.settingsStore.cachedQuotaRemaining) }
     var quotaMax by remember { mutableStateOf(app.settingsStore.cachedQuotaMax) }
     var isUnlimited by remember { mutableStateOf(app.settingsStore.cachedIsUnlimited) }
+    var lastPowerTapAtMs by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(state) {
         if (state == ConnectionState.CONNECTED) {
@@ -181,11 +189,17 @@ fun HomeScreen(
     }
 
     LaunchedEffect(Unit) {
-        launch {
-            ExitCheck().fetchDirectIpInfo().onSuccess { info ->
-                realIp = info
-                app.settingsStore.cachedRealIp = info.ip
-                app.settingsStore.cachedRealCountry = info.countryCode
+        // The pre-VPN IP lookup is part of the "Verify exit location"
+        // feature: with the toggle off it must not run at all (it is a
+        // request on the user's real connection, and its result is only
+        // ever shown as that feature's "your connection" line).
+        if (app.settingsStore.exitCheckEnabled) {
+            launch {
+                ExitCheck().fetchDirectIpInfo().onSuccess { info ->
+                    realIp = info
+                    app.settingsStore.cachedRealIp = info.ip
+                    app.settingsStore.cachedRealCountry = info.countryCode
+                }
             }
         }
         launch {
@@ -236,7 +250,17 @@ fun HomeScreen(
                 modifier = Modifier
                     .widthIn(max = 520.dp)
                     .fillMaxWidth()
+                    .weight(1f)
                     .padding(horizontal = 24.dp),
+            ) {
+            // The content column scrolls: at large font scales (1.3+)
+            // or on short viewports the fixed layout used to clip with
+            // no way to reach the lower rows. The footer stays pinned
+            // below this weighted, scrolling region.
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
             ) {
                 // Header: wordmark + theme / settings round buttons.
                 Row(
@@ -257,9 +281,7 @@ fun HomeScreen(
                     val showingDark = themeController.resolveDark(systemInDarkTheme)
                     Box(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(chipBg)
+                            .size(48.dp)
                             .combinedClickable(
                                 role = Role.Button,
                                 onClick = { themeController.toggle(systemInDarkTheme) },
@@ -270,6 +292,13 @@ fun HomeScreen(
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(chipBg),
+                            contentAlignment = Alignment.Center,
+                        ) {
                         Icon(
                             imageVector = when (mode) {
                                 ThemeMode.SYSTEM -> Icons.Filled.BrightnessAuto
@@ -285,22 +314,29 @@ fun HomeScreen(
                             tint = if (darkTheme) Color.White else IFoxyYellow,
                             modifier = Modifier.size(20.dp),
                         )
+                        }
                     }
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(4.dp))
                     Box(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(chipBg)
+                            .size(48.dp)
                             .clickable(role = Role.Button, onClick = onOpenSettings),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Tune,
-                            contentDescription = "Settings",
-                            tint = if (darkTheme) Color.White else IFoxyYellow,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(chipBg),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Tune,
+                                contentDescription = "Settings",
+                                tint = if (darkTheme) Color.White else IFoxyYellow,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
 
@@ -472,13 +508,33 @@ fun HomeScreen(
                                 ),
                         )
                     }
+                    if (connecting) {
+                        CircularProgressIndicator(
+                            color = IFoxyYellow,
+                            strokeWidth = 3.dp,
+                            modifier = Modifier.size(146.dp),
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .size(120.dp)
                             .clip(CircleShape)
                             .background(if (connected || !darkTheme) IFoxyInk else IFoxyCardDark)
                             .clickable(role = Role.Button) {
-                                if (state == ConnectionState.DISCONNECTED) onRequestConnect() else onDisconnect()
+                                // Debounce: a second tap within 600 ms
+                                // must not dispatch a contradictory
+                                // connect/disconnect while the service
+                                // is still reacting to the first one.
+                                val now = SystemClock.elapsedRealtime()
+                                if (now - lastPowerTapAtMs >= 600) {
+                                    lastPowerTapAtMs = now
+                                    if (state == ConnectionState.DISCONNECTED) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                        onRequestConnect()
+                                    } else {
+                                        onDisconnect()
+                                    }
+                                }
                             },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -572,6 +628,25 @@ fun HomeScreen(
                     )
                 }
 
+                // "Verify exit location" baseline: the user's real
+                // connection as seen before the tunnel (fetched above
+                // only when the toggle is on; seeded from the cache).
+                val realIpInfo = realIp
+                if (!connected && !connecting && app.settingsStore.exitCheckEnabled && realIpInfo != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Your connection: ${realIpInfo.ip} \u00B7 ${realIpInfo.countryCode}",
+                        textAlign = TextAlign.Center,
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.Normal,
+                            fontSize = 12.sp,
+                        ),
+                        color = muted,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
                 // Stats: session data + ping (tap ping to re-measure).
                 Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth()) {
@@ -613,10 +688,25 @@ fun HomeScreen(
                             ),
                             color = ink,
                         )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            if (connected) {
+                                "\u2193 ${formatBytes(liveStats.rxRateBytesPerSec)}/s \u00B7 \u2191 ${formatBytes(liveStats.txRateBytesPerSec)}/s"
+                            } else {
+                                "\u2193 \u2014 \u00B7 \u2191 \u2014"
+                            },
+                            style = TextStyle(
+                                fontFamily = PoppinsFamily,
+                                fontWeight = FontWeight.Normal,
+                                fontSize = 11.sp,
+                            ),
+                            color = muted,
+                        )
                     }
                     Column(
                         modifier = Modifier
                             .weight(1f)
+                            .semantics { contentDescription = "Ping \u2014 tap to measure again" }
                             .clip(RoundedCornerShape(12.dp))
                             .clickable(role = Role.Button) {
                                 if (!isPinging) {
@@ -685,8 +775,11 @@ fun HomeScreen(
                     }
                 }
 
-                // Guardian quota pill (connected, when the account reports one).
-                if (connected && (isUnlimited || quotaRemaining != null || quotaMax != null)) {
+                // Guardian quota pill: shown whenever the account
+                // reports one — the values are seeded from the
+                // SettingsStore cache, so the pill also renders while
+                // disconnected (the last known allowance).
+                if (isUnlimited || quotaRemaining != null || quotaMax != null) {
                     Spacer(Modifier.height(14.dp))
                     Box(
                         modifier = Modifier
@@ -713,19 +806,20 @@ fun HomeScreen(
                     }
                 }
 
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "Protected by your Firefox account",
-                    style = TextStyle(
-                        fontFamily = PoppinsFamily,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = 12.sp,
-                    ),
-                    color = muted,
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                )
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(24.dp))
             }
+            }
+            Text(
+                "Protected by your Firefox account",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
+                ),
+                color = muted,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+            Spacer(Modifier.height(20.dp))
         }
     }
 }
