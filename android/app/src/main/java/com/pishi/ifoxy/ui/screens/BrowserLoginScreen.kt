@@ -28,6 +28,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
@@ -39,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,6 +53,7 @@ import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import java.lang.ref.WeakReference
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -113,9 +116,8 @@ private val WEBCHANNEL_HOOK_JS = """
   };
   var checkSuccessUrl = function(url) {
     var u = getUrlString(url).toLowerCase();
-    return u.indexOf('confirmed') !== -1 || u.indexOf('connect_another_device') !== -1 ||
-           u.indexOf('/pair') !== -1 || u.indexOf('/settings') !== -1 || u.indexOf('/complete') !== -1 ||
-           u.indexOf('success') !== -1;
+    return u.indexOf('/signin/confirmed') !== -1 || u.indexOf('/connect_another_device') !== -1 ||
+           u.indexOf('/pair') !== -1 || u.indexOf('/complete') !== -1;
   };
   if (window.fetch) {
     var origFetch = window.fetch;
@@ -180,11 +182,20 @@ private val WEBCHANNEL_HOOK_JS = """
 /**
  * Bridge between the FxA web page and the app. The page talks to its
  * embedding "browser" through WebChannel messages; the injected hook
- * script forwards them here. Only messages from a firefox.com origin
- * are acted on, and the only value taken from the page is the session
- * token, accepted solely in its canonical 64-hex shape. The token is
- * released to the app only once the session is verified (the page
- * completes any email-code / TOTP step itself first).
+ * script forwards them here, and the two-argument [onMessage] drops
+ * messages whose caller-supplied origin URL is not a firefox.com host.
+ *
+ * Security invariant, stated honestly: a JavascriptInterface cannot
+ * authenticate WHICH frame invoked it, and the origin string checked
+ * here is supplied by the page itself, so bridge calls must be treated
+ * as unauthenticated by frame. The real protection is that the only
+ * value taken from the page is the session token, accepted solely in
+ * its canonical 64-hex shape: the token is a bearer secret that a
+ * caller must already possess (it cannot be extracted or forged), and
+ * it is released to the app only once the session is verified (the
+ * page completes any email-code / TOTP step itself first). There is
+ * deliberately no convenience overload that defaults or hard-codes a
+ * trusted origin.
  *
  * Kept whole by proguard-rules.pro: the WebView reaches these methods
  * reflectively through the JavascriptInterface name.
@@ -197,11 +208,6 @@ internal class WebChannelBridge(
     @Volatile
     var pendingSessionToken: String? = null
         private set
-
-    @JavascriptInterface
-    fun onMessage(payload: String) {
-        onMessage(payload, "https://accounts.firefox.com")
-    }
 
     @JavascriptInterface
     fun onSessionVerified() {
@@ -252,7 +258,10 @@ internal class WebChannelBridge(
                     .ifBlank { data.optString("token", "").trim() }
                 if (SESSION_TOKEN_HEX.matches(token)) {
                     pendingSessionToken = token
-                    val isVerified = if (data.has("verified")) data.optBoolean("verified", true) else true
+                    // A missing "verified" field means UNVERIFIED:
+                    // the token stays pending until the page proves
+                    // the session (verify/TOTP completion hooks).
+                    val isVerified = data.optBoolean("verified", false)
                     if (isVerified) {
                         notifySessionToken(token)
                     }
@@ -305,9 +314,7 @@ private fun isSuccessUrl(url: String?): Boolean {
     return u.contains("/signin/confirmed") ||
         u.contains("/connect_another_device") ||
         u.contains("/pair") ||
-        u.contains("/settings") ||
-        u.contains("/complete") ||
-        u.contains("success")
+        u.contains("/complete")
 }
 
 /**
@@ -380,6 +387,29 @@ internal fun BrowserLoginScreen(
     val currentExchange by rememberUpdatedState(exchangeToken)
     var exchanging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // The FxA page carries the user's password / verification code:
+    // keep it out of screenshots and the Recents thumbnail while this
+    // screen is composed.
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        val window = (context as? android.app.Activity)?.window
+        window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
+    // While the token exchange runs, the user is locked in (Back is
+    // swallowed); if it drags past ~10 s, offer an explicit escape.
+    var exchangeSlow by remember { mutableStateOf(false) }
+    LaunchedEffect(exchanging) {
+        exchangeSlow = false
+        if (exchanging) {
+            delay(10_000)
+            exchangeSlow = true
+        }
+    }
 
     LaunchedEffect(errorMessage) {
         if (errorMessage != null) exchanging = false
@@ -471,6 +501,37 @@ internal fun BrowserLoginScreen(
                 color = IFoxyYellow,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Text(
+                "Finishing sign-in securely\u2026",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
+                ),
+                color = Color.White.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            if (exchanging && exchangeSlow) {
+                TextButton(
+                    onClick = {
+                        exchanging = false
+                        currentOnCanceled()
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                ) {
+                    Text(
+                        "Cancel and try again",
+                        color = IFoxyYellow,
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                        ),
+                    )
+                }
+            }
         } else if (!pageLoaded || pageProgress < 100) {
             LinearProgressIndicator(
                 progress = { pageProgress / 100f },
@@ -515,6 +576,12 @@ internal fun BrowserLoginScreen(
                         webViewInstance = this
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        // The FxA page never needs local files or
+                        // content providers; deny both explicitly
+                        // instead of relying on platform defaults.
+                        settings.allowFileAccess = false
+                        @Suppress("DEPRECATION")
+                        settings.allowContentAccess = false
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
                         settings.userAgentString = FIREFOX_ANDROID_UA

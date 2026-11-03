@@ -35,6 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -215,7 +218,7 @@ fun LoginScreen(
                     fontWeight = FontWeight.Normal,
                     fontSize = 13.5.sp,
                 ),
-                color = Color.White.copy(alpha = 0.55f),
+                color = Color.White.copy(alpha = 0.65f),
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -258,7 +261,8 @@ fun LoginScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
+                        .padding(horizontal = 8.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
                 )
             }
             errorMessage?.let {
@@ -274,7 +278,8 @@ fun LoginScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
+                        .padding(horizontal = 8.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
                 )
             }
             Spacer(Modifier.height(18.dp))
@@ -285,7 +290,7 @@ fun LoginScreen(
                     fontWeight = FontWeight.Normal,
                     fontSize = 12.sp,
                 ),
-                color = Color.White.copy(alpha = 0.4f),
+                color = Color.White.copy(alpha = 0.65f),
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(6.dp))
@@ -296,7 +301,7 @@ fun LoginScreen(
                     fontWeight = FontWeight.Normal,
                     fontSize = 12.sp,
                 ),
-                color = Color.White.copy(alpha = 0.4f),
+                color = Color.White.copy(alpha = 0.65f),
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(26.dp))
@@ -311,7 +316,7 @@ fun LoginScreen(
                 TextButton(onClick = onOpenSettings) {
                     Text(
                         "Settings",
-                        color = Color.White.copy(alpha = 0.55f),
+                        color = Color.White.copy(alpha = 0.65f),
                         style = TextStyle(
                             fontFamily = PoppinsFamily,
                             fontWeight = FontWeight.Medium,
@@ -322,7 +327,7 @@ fun LoginScreen(
                 TextButton(onClick = onOpenLogs) {
                     Text(
                         "Logs",
-                        color = Color.White.copy(alpha = 0.55f),
+                        color = Color.White.copy(alpha = 0.65f),
                         style = TextStyle(
                             fontFamily = PoppinsFamily,
                             fontWeight = FontWeight.Medium,
