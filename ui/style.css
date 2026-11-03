@@ -1,5 +1,5 @@
 :root {
-  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --bg-primary: #0f101a;
   --bg-surface: #181928;
   --bg-surface-elevated: #222338;
@@ -21,6 +21,8 @@
   --state-connecting-glow: rgba(255, 179, 0, 0.35);
   --state-connected: #00e676;
   --state-connected-glow: rgba(0, 230, 118, 0.4);
+  --state-reconnecting: #ff9431;
+  --state-failed: #ff4d4d;
   
   --card-radius: 20px;
   --button-radius: 14px;
@@ -40,6 +42,15 @@
   
   --state-disconnected: #9ea3be;
   --state-disconnected-glow: rgba(158, 163, 190, 0.2);
+
+  /* State colors re-derived for the light background: the dark-theme
+     values fell to 1.5-2:1 here. Ratios on #f4f5fa: connected 4.79:1,
+     connecting 4.68:1, reconnecting 4.26:1 (large status text),
+     failed 5.25:1. */
+  --state-connected: #0a7d43;
+  --state-connecting: #9a6200;
+  --state-reconnecting: #b25f00;
+  --state-failed: #c81e2b;
 }
 
 * {
@@ -114,8 +125,8 @@ body {
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -135,7 +146,6 @@ body {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  max-width: 480px;
   width: 100%;
   margin: 0 auto;
   justify-content: space-between;
@@ -252,7 +262,7 @@ body {
 }
 
 .status-subtext {
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   color: var(--text-secondary);
   margin-top: 6px;
   text-align: center;
@@ -381,13 +391,13 @@ body {
 }
 
 .quota-title {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--text-secondary);
   font-weight: 500;
 }
 
 .quota-val {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--text-primary);
   font-weight: 600;
 }
@@ -435,7 +445,6 @@ body {
   border: 1px solid var(--border-subtle);
   border-radius: 28px 28px 0 0;
   width: 100%;
-  max-width: 500px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
@@ -447,15 +456,6 @@ body {
 
 .drawer-backdrop.active .drawer-panel {
   transform: translateY(0);
-}
-
-.drawer-handle {
-  width: 40px;
-  height: 4px;
-  background: var(--text-tertiary);
-  border-radius: 2px;
-  align-self: center;
-  margin-bottom: 16px;
 }
 
 .drawer-header {
@@ -642,7 +642,7 @@ body {
 .splash-sub {
   color: var(--text-secondary);
   font-size: 0.95rem;
-  margin-bottom: 40px;
+  margin-bottom: 32px;
 }
 
 .splash-spinner {
@@ -663,15 +663,17 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   height: 100%;
   padding: 24px;
+  overflow-y: auto;
 }
 
 .login-brand {
   display: flex;
   align-items: center;
   gap: 12px;
+  margin-top: auto;
   margin-bottom: 28px;
 }
 
@@ -688,10 +690,11 @@ body {
 .login-card {
   width: 100%;
   max-width: 340px;
+  margin-bottom: auto;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--card-radius);
-  padding: 26px 22px;
+  padding: 24px 20px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 
@@ -703,7 +706,7 @@ body {
 }
 
 .login-desc {
-  font-size: 0.84rem;
+  font-size: 0.85rem;
   line-height: 1.45;
   color: var(--text-secondary);
   margin-bottom: 22px;
@@ -716,7 +719,7 @@ body {
   color: #ff8291;
   padding: 10px 14px;
   border-radius: 10px;
-  font-size: 0.84rem;
+  font-size: 0.85rem;
   margin-bottom: 14px;
   text-align: left;
 }
@@ -726,10 +729,13 @@ body {
   letter-spacing: 6px;
   text-align: center;
   font-weight: 700;
+  /* 16px base padding + the 6px letter-spacing, so the centered code
+     is not shifted left by the trailing spacing after the last digit. */
+  padding-left: calc(16px + 6px);
 }
 
 .twofa-hint {
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   color: var(--text-secondary);
   margin-bottom: 16px;
 }
@@ -754,8 +760,8 @@ body {
 .btn-spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #ffffff;
+  border: 2px solid rgba(27, 28, 33, 0.25);
+  border-top-color: #1b1c21;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   display: inline-block;
@@ -767,6 +773,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings-card {
@@ -823,6 +832,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 6px 0;
   font-size: 0.85rem;
   color: var(--text-secondary);
@@ -840,7 +851,7 @@ body {
 /* Light theme: the neon green badge text is unreadable on white (F6);
    use a dark green there instead. */
 [data-theme="light"] .badge-status {
-  color: #0a7d43;
+  color: #086636;
 }
 
 .btn-logout {
@@ -872,7 +883,6 @@ body {
   font-size: 0.78rem;
   color: #a4b0be;
   overflow-y: auto;
-  max-height: 420px;
   white-space: pre-wrap;
 }
 
@@ -932,6 +942,10 @@ body {
   background: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-primary);
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 6px 12px;
   border-radius: 8px;
   font-size: 0.8rem;
@@ -989,7 +1003,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1027,4 +1041,155 @@ body {
 .btn-logout:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ==================== UI/UX fix wave (v1.0.28) ==================== */
+
+/* Global keyboard focus for native controls (the div-based controls
+   already carry their own :focus-visible rules above). */
+button:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* Drawer titles had no font rule and fell back to UA defaults. */
+.drawer-header h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* Tunnel-mode select styling (was an inline style referencing two
+   undefined variables, --bg-tertiary and --border-color). */
+.tunnel-mode-select {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px 8px;
+  max-width: 60%;
+  font-size: 0.85rem;
+}
+
+.settings-row > span:first-child {
+  min-width: 0;
+}
+
+/* Latency badge: neutral while not connected; in the light theme the
+   green is the darker #0a7d43 (4.70:1 on its effective background). */
+.latency-badge.inactive {
+  color: var(--text-secondary);
+  background: var(--bg-surface-elevated);
+  border-color: var(--border-subtle);
+}
+
+[data-theme="light"] .latency-badge {
+  color: #0a7d43;
+}
+
+/* Login error banner, light theme: #b00020 on the stronger light
+   background = 5.35:1 (the dark-theme pairing is unchanged). */
+[data-theme="light"] .login-error-banner {
+  color: #b00020;
+  background: rgba(255, 71, 87, 0.25);
+  border-color: rgba(255, 71, 87, 0.45);
+}
+
+/* Logout button, light theme: #c81e2b on its effective light
+   background = 4.93:1. */
+[data-theme="light"] .btn-logout {
+  color: #c81e2b;
+}
+
+/* The logs panel keeps its own 90vh cap (was an inline style). */
+#modal-logs .drawer-panel {
+  max-height: 90vh;
+}
+
+/* Informational text stays selectable despite the global
+   user-select: none (error text gets copied into bug reports). */
+.login-error-banner,
+.status-label,
+.status-subtext,
+.location-text h3,
+.location-text p {
+  user-select: text;
+}
+
+/* Per-field validation state for the login forms. */
+.form-input.invalid {
+  border-color: #ff4757;
+  box-shadow: 0 0 0 3px rgba(255, 71, 87, 0.18);
+}
+
+/* Text & UI size (zoom) buttons in Settings. */
+.zoom-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.zoom-btn.selected {
+  background: rgba(255, 122, 0, 0.12);
+  border-color: rgba(255, 122, 0, 0.55);
+}
+
+/* Connected-state compaction: the session + proxy rows add ~120px in
+   the connected state. Shrinking the hero 200px -> 150px (50px) and
+   tightening the vertical rhythm (~40px) keeps the whole home view
+   inside the fixed 720px window without scrolling (proxy_only). */
+.power-button-wrapper.state-connected {
+  width: 150px;
+  height: 150px;
+}
+
+.power-button-wrapper.state-connected .outer-pulse-ring {
+  width: 150px;
+  height: 150px;
+}
+
+.power-button-wrapper.state-connected .middle-ring {
+  width: 118px;
+  height: 118px;
+}
+
+.power-button-wrapper.state-connected .inner-power-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.main-content.connected {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+.main-content.connected .status-label {
+  margin-top: 14px;
+}
+
+.main-content.connected .speed-row {
+  margin-top: 16px;
+}
+
+.main-content.connected .location-card {
+  margin-top: 10px;
+}
+
+.main-content.connected .session-row,
+.main-content.connected .proxy-row,
+.main-content.connected .quota-card {
+  margin-top: 10px;
+}
+
+/* Reduced motion: stop the infinite pulse/float loops and shorten
+   transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .power-button-wrapper.state-connected .outer-pulse-ring,
+  .power-button-wrapper.state-connecting .outer-pulse-ring,
+  .splash-logo {
+    animation: none;
+  }
+
+  * {
+    transition-duration: 0.01ms !important;
+  }
 }

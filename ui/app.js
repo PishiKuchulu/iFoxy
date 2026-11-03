@@ -16,6 +16,11 @@
   let opInFlight = false; // F3: a connect/disconnect invoke is in flight
   let connectedSince = null; // D9: client-side session start timestamp
   let serverListError = false; // F13: last fetch failed -> show a retry row
+  let lastLatencyText = 'Auto'; // last known latency label for the location card
+  let logsRefreshInterval = null; // 5 s backend-log refresh while the logs drawer is open
+  let pollFailCount = 0; // consecutive status polls that returned no state
+  let serviceDownShown = false; // dead local service already surfaced
+  let forceResync = false; // after a service-down episode, re-render state once
 
   // Screen Elements
   const screenSplash = document.getElementById('screen-splash');
@@ -33,6 +38,8 @@
   const currentLatency = document.getElementById('current-latency');
   const quotaText = document.getElementById('quota-text');
   const quotaBar = document.getElementById('quota-bar');
+  const quotaTitle = document.getElementById('quota-title');
+  const mainContent = document.querySelector('.main-content');
 
   // Drawer & Modal Elements
   const modalServers = document.getElementById('modal-servers');
@@ -111,6 +118,10 @@
 
   function closeDrawer(drawer) {
     if (!drawer) return;
+    if (drawer === modalLogs && logsRefreshInterval) {
+      clearInterval(logsRefreshInterval);
+      logsRefreshInterval = null;
+    }
     drawer.classList.remove('active');
     const idx = openDrawers.indexOf(drawer);
     if (idx >= 0) openDrawers.splice(idx, 1);
@@ -128,6 +139,27 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openDrawers.length > 0) {
       closeDrawer(openDrawers[openDrawers.length - 1]);
+    }
+  });
+
+  // Focus trap: the drawers declare aria-modal="true", so Tab must cycle
+  // inside the topmost open drawer instead of escaping to the page
+  // behind the backdrop.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || openDrawers.length === 0) return;
+    const drawer = openDrawers[openDrawers.length - 1];
+    const focusables = Array.from(
+      drawer.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    ).filter(el => el.offsetParent !== null);
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
     }
   });
 
@@ -262,6 +294,9 @@
         if (subscriptionBadge) {
           subscriptionBadge.textContent = ent.subscribed ? 'Mozilla VPN subscription' : 'Free 50 GB Monthly';
         }
+        if (quotaTitle) {
+          quotaTitle.textContent = ent.subscribed ? 'Subscription Quota' : 'Monthly Free Quota';
+        }
         if (ent.quota_remaining !== undefined && ent.quota_remaining !== null) {
           const gbRem = (ent.quota_remaining / (1024 * 1024 * 1024)).toFixed(1);
           if (quotaText) quotaText.textContent = `${gbRem} GB remaining`;
@@ -279,6 +314,9 @@
       }
     } catch (_) {}
     // Never show an invented allowance: if the real quota is unknown, say so.
+    if (subscriptionBadge) {
+      subscriptionBadge.textContent = 'Subscription unknown';
+    }
     if (quotaText) {
       quotaText.textContent = 'Quota unavailable';
     }
@@ -287,13 +325,32 @@
     }
   }
 
-  // Submit Login Credentials
-  btnSubmitLogin.addEventListener('click', async () => {
+  // Per-field validation state: invalid fields are flagged individually
+  // (the error banner is referenced from the inputs via aria-describedby).
+  function setFieldValidity(input, valid) {
+    if (!input) return;
+    input.classList.toggle('invalid', !valid);
+    if (valid) {
+      input.removeAttribute('aria-invalid');
+    } else {
+      input.setAttribute('aria-invalid', 'true');
+    }
+  }
+
+  // Submit Login Credentials (invoked by the credentials <form> submit;
+  // Enter in a field submits natively, the button is type=submit).
+  async function submitLogin() {
     const email = loginEmail.value.trim();
     const password = loginPassword.value;
 
-    if (!email || !password) {
-      showError(loginError, 'Please enter both email and password');
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const passwordOk = password.length > 0;
+    setFieldValidity(loginEmail, emailOk);
+    setFieldValidity(loginPassword, passwordOk);
+    if (!emailOk || !passwordOk) {
+      showError(loginError, (!email || !password)
+        ? 'Please enter both email and password'
+        : 'Please enter a valid email address');
       return;
     }
 
@@ -325,15 +382,17 @@
     } finally {
       setButtonLoading(btnSubmitLogin, false, 'Continue');
     }
-  });
+  }
 
-  // Submit 2FA Code
-  btnSubmit2fa.addEventListener('click', async () => {
+  // Submit 2FA Code (invoked by the 2FA <form> submit).
+  async function submit2fa() {
     const code = loginCode.value.trim();
     if (!code || code.length < 6) {
+      setFieldValidity(loginCode, false);
       showError(twofaError, 'Please enter the 6-digit confirmation code');
       return;
     }
+    setFieldValidity(loginCode, true);
 
     hideError(twofaError);
     setButtonLoading(btnSubmit2fa, true, 'Verifying...');
@@ -366,20 +425,30 @@
     } finally {
       setButtonLoading(btnSubmit2fa, false, 'Verify & Sign In');
     }
-  });
+  }
 
-  // Allow pressing Enter in the login fields to submit, like clicking the button
-  function onEnterSubmit(input, button) {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing && !button.disabled) {
-        e.preventDefault();
-        button.click();
-      }
+  // The login steps are real <form> elements: Enter submits natively
+  // and the primary buttons are type=submit. These handlers only route
+  // the submission to the logic above (and respect the loading state).
+  const formCredentials = document.getElementById('form-credentials');
+  const form2fa = document.getElementById('form-2fa');
+  if (formCredentials) {
+    formCredentials.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!btnSubmitLogin.disabled) submitLogin();
     });
   }
-  onEnterSubmit(loginEmail, btnSubmitLogin);
-  onEnterSubmit(loginPassword, btnSubmitLogin);
-  onEnterSubmit(loginCode, btnSubmit2fa);
+  if (form2fa) {
+    form2fa.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!btnSubmit2fa.disabled) submit2fa();
+    });
+  }
+
+  // Clear a field's invalid flag as soon as the user edits it.
+  [loginEmail, loginPassword, loginCode].forEach(inp => {
+    if (inp) inp.addEventListener('input', () => setFieldValidity(inp, true));
+  });
 
   // F19: keep the confirmation code numeric-only as the user types.
   loginCode.addEventListener('input', () => {
@@ -462,15 +531,32 @@
   }
 
   // ==================== VPN CONNECTION ====================
-  function zeroSpeedDisplays() {
-    speedDown.textContent = '0.0 KB/s';
-    speedUp.textContent = '0.0 KB/s';
+  function zeroSpeedDisplays(dashes) {
+    const label = dashes ? '—' : '0.0 KB/s';
+    speedDown.textContent = label;
+    speedUp.textContent = label;
+  }
+
+  // The location-card latency badge only carries a live value while
+  // connected; in every other state it is neutral and shows a dash
+  // instead of a stale or "Auto" green value.
+  function updateLatencyBadge() {
+    if (!currentLatency) return;
+    if (vpnState === 'connected') {
+      currentLatency.textContent = lastLatencyText;
+      currentLatency.classList.remove('inactive');
+    } else {
+      currentLatency.textContent = '—';
+      currentLatency.classList.add('inactive');
+    }
   }
 
   function setVpnState(newState, extra) {
     vpnState = newState;
     const ringClass = (newState === 'reconnecting') ? 'connecting' : (newState === 'disconnecting' || newState === 'failed' ? 'disconnected' : newState);
     powerButton.className = 'power-button-wrapper state-' + ringClass;
+    if (mainContent) mainContent.classList.toggle('connected', newState === 'connected');
+    updateLatencyBadge();
 
     if (newState === 'connected') {
       statusText.textContent = 'Connected';
@@ -483,7 +569,7 @@
       zeroSpeedDisplays();
     } else if (newState === 'reconnecting') {
       statusText.textContent = 'Reconnecting…';
-      statusText.style.color = '#ff9431';
+      statusText.style.color = 'var(--state-reconnecting)';
       statusHint.textContent = extra || 'Re-establishing tunnel';
       zeroSpeedDisplays();
     } else if (newState === 'disconnecting') {
@@ -493,14 +579,14 @@
       zeroSpeedDisplays();
     } else if (newState === 'failed') {
       statusText.textContent = 'Connection Failed';
-      statusText.style.color = '#ff4d4d';
+      statusText.style.color = 'var(--state-failed)';
       statusHint.textContent = extra || 'Tap to retry';
       zeroSpeedDisplays();
     } else {
       statusText.textContent = 'Disconnected';
       statusText.style.color = 'var(--text-primary)';
       statusHint.textContent = 'Tap to connect';
-      zeroSpeedDisplays();
+      zeroSpeedDisplays(true);
     }
   }
 
@@ -535,7 +621,7 @@
       speedTracking = true;
     } else {
       speedTracking = false;
-      zeroSpeedDisplays();
+      zeroSpeedDisplays(status.state === 'disconnected');
     }
   }
 
@@ -587,10 +673,36 @@
   }
 
   // Real backend state synchronization loop (R-12, H9, H2)
+  // Dead-service detection: a poll whose invoke returned no state means
+  // the local control service did not answer. After 3 in a row, say so
+  // once instead of leaving the last known state on screen forever.
+  function notePollFailure() {
+    pollFailCount++;
+    if (pollFailCount >= 3 && !serviceDownShown) {
+      serviceDownShown = true;
+      statusText.textContent = 'Local service not responding';
+      statusText.style.color = 'var(--state-failed)';
+      statusHint.textContent = 'Restart iFoxy if this persists';
+      log('Local app service stopped responding.');
+    }
+  }
+
+  function notePollSuccess() {
+    pollFailCount = 0;
+    if (serviceDownShown) {
+      serviceDownShown = false;
+      forceResync = true; // re-render the real state once, below
+    }
+  }
+
   async function pollVpnStatus() {
     try {
       const status = await invoke('get_vpn_status');
-      if (!status || !status.state) return;
+      if (!status || !status.state) {
+        notePollFailure();
+        return;
+      }
+      notePollSuccess();
 
       // F12: this single poll feeds speeds, the session row and the
       // proxy-endpoint row as well as the state machine below.
@@ -603,7 +715,7 @@
       if (opInFlight) return;
 
       if (status.state === 'connected') {
-        if (vpnState !== 'connected') {
+        if (forceResync || vpnState !== 'connected') {
           if (status.current_country) {
             selectedServer.countryName = status.current_country;
             if (status.current_city) selectedServer.cityName = status.current_city;
@@ -614,29 +726,32 @@
           setVpnState('connected');
         }
       } else if (status.state === 'connecting') {
-        if (vpnState !== 'connecting') {
+        if (forceResync || vpnState !== 'connecting') {
           setVpnState('connecting');
         }
       } else if (status.state === 'reconnecting') {
-        if (vpnState !== 'reconnecting') {
+        if (forceResync || vpnState !== 'reconnecting') {
           log(`Tunnel reconnecting (attempt ${status.attempt || 1})`);
           setVpnState('reconnecting', `Attempt ${status.attempt || 1}`);
         }
       } else if (status.state === 'disconnecting') {
-        if (vpnState !== 'disconnecting') {
+        if (forceResync || vpnState !== 'disconnecting') {
           setVpnState('disconnecting');
         }
       } else if (status.state === 'failed') {
-        if (vpnState !== 'failed') {
+        if (forceResync || vpnState !== 'failed') {
           log(`Tunnel failed: ${status.error || 'Unknown error'}`);
           setVpnState('failed', status.error);
         }
       } else if (status.state === 'disconnected') {
-        if (vpnState !== 'disconnected') {
+        if (forceResync || vpnState !== 'disconnected') {
           setVpnState('disconnected');
         }
       }
-    } catch (_) {}
+      forceResync = false;
+    } catch (_) {
+      notePollFailure();
+    }
   }
 
   function tunnelMode() {
@@ -670,7 +785,8 @@
           log('Connection request accepted by backend. Awaiting tunnel activation...');
           // G5/F25: show the bridge's probed latency for the chosen node.
           if (res.latency_ms !== undefined && res.latency_ms !== null) {
-            currentLatency.textContent = `${res.latency_ms} ms`;
+            lastLatencyText = `${res.latency_ms} ms`;
+            updateLatencyBadge();
           }
         } else {
           const err = (res && res.error) ? res.error : 'Connection initiation failed';
@@ -707,6 +823,18 @@
 
   async function fetchServerList() {
     serverListError = false;
+    // Loading state: the drawer must not sit empty and silent while the
+    // fetch is in flight (the container is aria-live, so this is also
+    // announced). renderServers() replaces it when the fetch settles.
+    if (serverListContainer) {
+      while (serverListContainer.firstChild) {
+        serverListContainer.removeChild(serverListContainer.firstChild);
+      }
+      const loading = document.createElement('div');
+      loading.className = 'server-empty';
+      loading.textContent = 'Loading locations…';
+      serverListContainer.appendChild(loading);
+    }
     try {
       const res = await invoke('fetch_server_list');
       if (res && res.success && res.countries && res.countries.length > 0) {
@@ -734,12 +862,61 @@
   }
 
   function selectServer(item) {
+    const wasActive = vpnState === 'connected' || vpnState === 'connecting' || vpnState === 'reconnecting';
     selectedServer = item;
     currentLocationTitle.textContent = item.countryName;
     currentLocationSub.textContent = item.cityName;
-    currentLatency.textContent = item.latency;
+    lastLatencyText = item.latency;
+    updateLatencyBadge();
+    // Keep the rendered rows' selection marker and aria-selected in sync.
+    if (serverListContainer) {
+      serverListContainer.querySelectorAll('.server-item').forEach(row => {
+        const isSel = row.dataset.countryCode === item.countryCode && row.dataset.cityCode === item.cityCode;
+        row.classList.toggle('selected', isSel);
+        row.setAttribute('aria-selected', isSel ? 'true' : 'false');
+      });
+    }
     closeDrawer(modalServers);
     log(`Selected Server: ${item.countryName} - ${item.cityName}`);
+    // Parity with Android: changing location mid-session retargets the
+    // tunnel instead of merely relabeling the card. If another operation
+    // is already in flight the opInFlight guard wins; the poll then
+    // reconciles the displayed state.
+    if (wasActive && !opInFlight) {
+      reconnectToSelected();
+    }
+  }
+
+  async function reconnectToSelected() {
+    opInFlight = true;
+    const mode = tunnelMode();
+    try {
+      log(`Switching tunnel to ${selectedServer.countryName} (${selectedServer.cityName}) in ${mode} mode...`);
+      setVpnState('disconnecting');
+      await invoke('disconnect_vpn');
+      setVpnState('connecting');
+      const res = await invoke('connect_vpn', {
+        country_code: selectedServer.countryCode,
+        city_code: selectedServer.cityCode,
+        mode: mode
+      });
+      if (res && res.success) {
+        log('Reconnection request accepted by backend. Awaiting tunnel activation...');
+        if (res.latency_ms !== undefined && res.latency_ms !== null) {
+          lastLatencyText = `${res.latency_ms} ms`;
+          updateLatencyBadge();
+        }
+      } else {
+        const err = (res && res.error) ? res.error : 'Connection initiation failed';
+        log(`Failed to reconnect: ${err}`);
+        setVpnState('failed', err);
+      }
+    } catch (err) {
+      log(`Reconnect exception: ${err}`);
+      setVpnState('failed', err.toString());
+    } finally {
+      opInFlight = false;
+    }
   }
 
   function renderServers(list) {
@@ -772,10 +949,15 @@
       const row = document.createElement('div');
       row.className = 'server-item';
       row.tabIndex = 0;
+      row.setAttribute('role', 'option');
+      row.dataset.countryCode = item.countryCode;
+      row.dataset.cityCode = item.cityCode;
       // F16: mark the row that matches the current selection.
-      if (item.countryCode === selectedServer.countryCode && item.cityCode === selectedServer.cityCode) {
+      const isSelected = item.countryCode === selectedServer.countryCode && item.cityCode === selectedServer.cityCode;
+      if (isSelected) {
         row.classList.add('selected');
       }
+      row.setAttribute('aria-selected', isSelected ? 'true' : 'false');
 
       const leftWrap = document.createElement('div');
       leftWrap.style.display = 'flex';
@@ -852,8 +1034,13 @@
 
   btnOpenLogs.addEventListener('click', () => {
     openDrawer(modalLogs, btnOpenLogs);
-    // F1/D1: (re)load the backend log lines every time the drawer opens.
+    // F1/D1: (re)load the backend log lines every time the drawer opens,
+    // then keep them fresh every 5 s while it stays open (the interval
+    // is cleared in closeDrawer).
     refreshBackendLogs();
+    if (!logsRefreshInterval) {
+      logsRefreshInterval = setInterval(refreshBackendLogs, 5000);
+    }
   });
   btnCloseLogs.addEventListener('click', () => closeDrawer(modalLogs));
 
@@ -861,16 +1048,20 @@
   // visible list (the backend buffer itself is untouched).
   if (btnCopyLogs) {
     btnCopyLogs.addEventListener('click', async () => {
+      const orig = btnCopyLogs.textContent;
+      let feedback = 'Copied';
       try {
         await navigator.clipboard.writeText(logsContainer ? logsContainer.innerText : '');
-      } catch (_) {}
-      const orig = btnCopyLogs.textContent;
-      btnCopyLogs.textContent = 'Copied';
+      } catch (_) {
+        feedback = 'Copy failed';
+      }
+      btnCopyLogs.textContent = feedback;
       setTimeout(() => { btnCopyLogs.textContent = orig; }, 1200);
     });
   }
   if (btnClearLogs) {
     btnClearLogs.addEventListener('click', () => {
+      if (!confirm('Clear the visible log view?')) return;
       if (!logsContainer) return;
       while (logsContainer.firstChild) logsContainer.removeChild(logsContainer.firstChild);
       backendLogsEl = null;
@@ -878,11 +1069,16 @@
   }
 
   // Local proxy endpoint row: click copies the endpoint (D2).
-  function copyProxyEndpoint() {
+  async function copyProxyEndpoint() {
     if (!proxyEndpoint) return;
-    try { navigator.clipboard.writeText(LOCAL_PROXY_ENDPOINT); } catch (_) {}
     const orig = proxyEndpoint.textContent;
-    proxyEndpoint.textContent = 'Copied!';
+    let feedback = 'Copied!';
+    try {
+      await navigator.clipboard.writeText(LOCAL_PROXY_ENDPOINT);
+    } catch (_) {
+      feedback = 'Copy failed';
+    }
+    proxyEndpoint.textContent = feedback;
     setTimeout(() => { proxyEndpoint.textContent = orig; }, 1200);
   }
   if (proxyRow) {
@@ -917,12 +1113,34 @@
     });
   }
 
+  // Text & UI size (zoom): the window is fixed-size and most of the UI
+  // is rem-based, so scaling the root font size scales the interface.
+  const zoomButtons = document.querySelectorAll('.zoom-btn');
+  function applyZoom(pct, save) {
+    const sizes = { '100': '16px', '115': '18.4px', '130': '20.8px' };
+    const key = String(pct);
+    document.documentElement.style.fontSize = sizes[key] || '16px';
+    zoomButtons.forEach(b => {
+      const active = b.getAttribute('data-zoom') === key;
+      b.classList.toggle('selected', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    if (save) {
+      try { localStorage.setItem('ifoxy-zoom', key); } catch (_) {}
+    }
+  }
+  zoomButtons.forEach(b => {
+    b.addEventListener('click', () => applyZoom(b.getAttribute('data-zoom'), true));
+  });
+
   function initPreferences() {
     let storedTheme = null;
     let storedMode = null;
+    let storedZoom = null;
     try {
       storedTheme = localStorage.getItem('ifoxy-theme');
       storedMode = localStorage.getItem('ifoxy-tunnel-mode');
+      storedZoom = localStorage.getItem('ifoxy-zoom');
     } catch (_) {}
     const initialTheme = storedTheme ||
       (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -930,6 +1148,7 @@
     if (storedMode && settingTunnelMode) {
       settingTunnelMode.value = storedMode;
     }
+    applyZoom(storedZoom || '100', false);
   }
 
   // ==================== INITIALIZATION ====================
