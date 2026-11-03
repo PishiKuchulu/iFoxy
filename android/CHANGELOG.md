@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.28 (versionCode 65) - UI/UX audit fix wave
+
+Fixes from a dedicated UI/UX audit of 1.0.27 (52 findings across
+both clients). Android highlights:
+
+- Browser sign-in: page load failures (offline, HTTP errors) now
+  show an in-app error with Retry and Open logs instead of a blank
+  page; rotating the phone no longer restarts the sign-in flow
+  (the activity now handles config changes itself).
+- Server list: cities show their names (not codes); a search field
+  filters countries/cities; single-line texts ellipsize instead
+  of clipping mid-word.
+- Light theme: the Connected status reads the theme's status
+  colors (readable green on white), muted text on the brand yellow
+  is darker, and the always-dark screens (sign-in, servers) keep
+  light status-bar icons.
+- Settings: switch rows are single accessible switches; section
+  headers announce expanded/collapsed; the update dialog's SHA-256
+  prints in 16-character blocks; dialogs cap their height and
+  scroll; buttons meet the 48 dp minimum; errors announce to
+  TalkBack (live regions).
+- Home/servers/settings/logs content is capped at 520 dp wide on
+  tablets and foldables; logs render in monospace; the widget and
+  Quick Settings tile use a power icon (state-tinted) instead of
+  the stock Android padlock, and the widget status text is 12sp
+  single-line.
+
+Deferred with reasons (unchanged by this wave): unifying the
+typography scale (21 font sizes / 51 ad-hoc styles) and a spacing
+token system — appearance-wide refactors that need a screenshot
+QA pass; three named off-grid spacing values were rounded here.
+
+
 ## 1.0.27 (versionCode 64) - granular-audit fix wave
 
 Fixes from a full component-by-component audit of the app (UI/UX,
