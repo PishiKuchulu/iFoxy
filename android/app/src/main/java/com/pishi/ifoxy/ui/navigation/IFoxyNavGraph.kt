@@ -15,6 +15,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.pishi.ifoxy.IFoxyApp
+import com.pishi.ifoxy.data.AppLogger
+import com.pishi.ifoxy.data.model.ConnectionState
 import com.pishi.ifoxy.ui.components.AppUpdateController
 import com.pishi.ifoxy.ui.components.AppUpdateDialog
 import com.pishi.ifoxy.ui.screens.HomeScreen
@@ -24,6 +26,7 @@ import com.pishi.ifoxy.ui.screens.ServerListScreen
 import com.pishi.ifoxy.ui.screens.SettingsScreen
 import com.pishi.ifoxy.ui.screens.SplashScreen
 import com.pishi.ifoxy.ui.theme.ThemeController
+import com.pishi.ifoxy.vpn.IFoxyVpnService
 
 object IFoxyRoutes {
     const val SPLASH = "splash"
@@ -56,6 +59,7 @@ fun IFoxyNavGraph(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (unreachable: Exception) {
+                AppLogger.w("IFoxyNavGraph", "vault migration: could not fetch the account email", unreachable)
                 null
             }
             val auth = app.tokenStore.loadAuth()
@@ -145,7 +149,18 @@ fun IFoxyNavGraph(
             ServerListScreen(
                 serverListClient = app.serverListClient,
                 proxyStateStore = app.proxyStateStore,
-                onServerSelected = { navController.popBackStack() },
+                onServerSelected = {
+                    // The selection is already saved to ProxyStateStore by
+                    // the screen; when a tunnel is live it must be
+                    // re-dialled on the new pick (same pattern as an
+                    // account switch), otherwise Home shows the new
+                    // location as "Connected" while traffic still exits
+                    // through the old one.
+                    if (IFoxyVpnService.state.value == ConnectionState.CONNECTED) {
+                        navScope.launch { app.accountSwitcher.restartTunnelIfRunning() }
+                    }
+                    navController.popBackStack()
+                },
                 onBack = { navController.popBackStack() },
             )
         }
@@ -155,6 +170,7 @@ fun IFoxyNavGraph(
                 darkTheme = themeController.resolveDark(isSystemInDarkTheme()),
                 updateController = updateController,
                 accountStore = app.accountStore,
+                themeController = themeController,
                 onSwitchAccount = { id ->
                     app.accountSwitcher.activate(id)
                     navScope.launch { app.accountSwitcher.restartTunnelIfRunning() }
