@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -18,14 +19,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -56,6 +58,7 @@ import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import com.pishi.ifoxy.vpn.PingUtil
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private sealed class LocationRow {
@@ -66,8 +69,8 @@ private sealed class LocationRow {
 
 private enum class PingState { PENDING, DONE, FAILED }
 
-private val Muted = Color.White.copy(alpha = 0.55f)
-private val Faint = Color.White.copy(alpha = 0.38f)
+private val Muted = Color.White.copy(alpha = 0.62f)
+private val Faint = Color.White.copy(alpha = 0.6f)
 
 /**
  * Choose location, per the Penpot design (03): dark brand screen,
@@ -85,26 +88,48 @@ fun ServerListScreen(
     var countries by remember { mutableStateOf<List<VpnCountry>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    // Row-tap failures ("no servers for this pick") get their own
+    // transient banner: the full-screen error state below only exists
+    // when the list is empty, so routing tap errors into errorMessage
+    // made those taps silently do nothing.
+    var tapError by remember { mutableStateOf<String?>(null) }
+    var refreshFailed by remember { mutableStateOf(false) }
+    var refreshAttempt by remember { mutableStateOf(0) }
 
     val selectedState by proxyStateStore.selectedProxyFlow.collectAsState()
 
     val pingResults = remember { mutableStateMapOf<String, Int>() }
     val pingStates = remember { mutableStateMapOf<String, PingState>() }
 
-    LaunchedEffect(Unit) {
-        val cached = withContext(Dispatchers.IO) { serverListClient.loadCachedCountries() }
-        if (cached.isNotEmpty()) {
-            countries = cached
-            isLoading = false
+    LaunchedEffect(tapError) {
+        if (tapError != null) {
+            delay(3_500)
+            tapError = null
+        }
+    }
+
+    LaunchedEffect(refreshAttempt) {
+        if (refreshAttempt == 0) {
+            val cached = withContext(Dispatchers.IO) { serverListClient.loadCachedCountries() }
+            if (cached.isNotEmpty()) {
+                countries = cached
+                isLoading = false
+            }
+        } else {
+            isLoading = countries.isEmpty()
+            errorMessage = null
         }
         runCatching { serverListClient.fetchCountries() }
             .onSuccess { fresh ->
                 countries = fresh
                 errorMessage = null
+                refreshFailed = false
             }
             .onFailure {
                 if (countries.isEmpty()) {
                     errorMessage = it.message ?: "Failed to load server list"
+                } else {
+                    refreshFailed = true
                 }
             }
         isLoading = false
@@ -157,27 +182,74 @@ fun ServerListScreen(
             )
         }
 
+        if (tapError != null) {
+            Text(
+                text = tapError.orEmpty(),
+                color = IFoxyErrorOnDark,
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+            )
+        }
+
         Box(Modifier.fillMaxSize()) {
             when {
                 isLoading -> CircularProgressIndicator(
                     color = IFoxyYellow,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                errorMessage != null && countries.isEmpty() -> Text(
-                    text = errorMessage.orEmpty(),
-                    textAlign = TextAlign.Center,
-                    color = IFoxyErrorOnDark,
-                    style = TextStyle(fontFamily = PoppinsFamily, fontSize = 14.sp),
+                errorMessage != null && countries.isEmpty() -> Column(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .fillMaxWidth()
                         .padding(24.dp),
-                )
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = errorMessage.orEmpty(),
+                        textAlign = TextAlign.Center,
+                        color = IFoxyErrorOnDark,
+                        style = TextStyle(fontFamily = PoppinsFamily, fontSize = 14.sp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = { refreshAttempt++ }) {
+                        Text(
+                            "Retry",
+                            color = IFoxyYellow,
+                            style = TextStyle(
+                                fontFamily = PoppinsFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                            ),
+                        )
+                    }
+                }
                 else -> LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 20.dp),
                 ) {
+                    if (refreshFailed) {
+                        item(key = "stale-caption") {
+                            Text(
+                                "Couldn't refresh \u2014 showing saved list",
+                                style = TextStyle(
+                                    fontFamily = PoppinsFamily,
+                                    fontWeight = FontWeight.Normal,
+                                    fontSize = 12.sp,
+                                ),
+                                color = Faint,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                            )
+                        }
+                    }
                     items(
                         rows,
                         key = { row ->
@@ -206,7 +278,7 @@ fun ServerListScreen(
                                                 proxyStateStore.save(chosen)
                                                 onServerSelected()
                                             } else {
-                                                errorMessage = "No available servers for ${row.country.name}"
+                                                tapError = "No available servers for ${row.country.name}"
                                             }
                                         }
                                         .padding(16.dp),
@@ -271,13 +343,6 @@ fun ServerListScreen(
                                         ),
                                         color = Color.White,
                                     )
-                                    Spacer(Modifier.weight(1f))
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        tint = Faint,
-                                        modifier = Modifier.size(18.dp),
-                                    )
                                 }
                             }
                             is LocationRow.CityRow -> {
@@ -309,14 +374,18 @@ fun ServerListScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable(role = Role.Button) {
+                                        .heightIn(min = 48.dp)
+                                        .selectable(
+                                            selected = isSelected,
+                                            role = Role.RadioButton,
+                                        ) {
                                             val candidates = ServerListClient.candidatesForCity(countries, row.country.code, city.code)
                                             val chosen = candidates.randomOrNull()
                                             if (chosen != null) {
                                                 proxyStateStore.save(chosen)
                                                 onServerSelected()
                                             } else {
-                                                errorMessage = "No available servers in ${city.code}"
+                                                tapError = "No available servers in ${city.code}"
                                             }
                                         }
                                         .padding(start = 34.dp, top = 9.dp, bottom = 9.dp),
