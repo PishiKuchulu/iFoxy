@@ -8,6 +8,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -74,10 +75,24 @@ object AppUpdateChecker {
             .header("User-Agent", USER_AGENT)
             .build()
         apiClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body?.string() ?: return@withContext null
+            ensureSuccessful(response.code)
+            val body = response.body?.string()
+                ?: throw IOException("Empty response from GitHub")
             selectUpdate(json.decodeFromString<List<GhRelease>>(body), currentVersion)
         }
+    }
+
+    /**
+     * A non-successful HTTP status is a FAILED check, never "no update".
+     * Throwing here keeps the caller from reporting "You're up to date"
+     * when GitHub could not actually be asked — most visibly the
+     * unauthenticated rate limit (HTTP 403) that shared VPN egress IPs
+     * routinely hit, which hid the live v1.0.28 release from phones on
+     * 1.0.27. The status code travels in the exception message so the
+     * failure dialog can show it.
+     */
+    internal fun ensureSuccessful(code: Int) {
+        if (code !in 200..299) throw IOException("HTTP $code")
     }
 
     /**
