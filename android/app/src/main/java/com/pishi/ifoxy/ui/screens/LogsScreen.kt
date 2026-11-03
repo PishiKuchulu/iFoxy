@@ -20,12 +20,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -70,6 +72,30 @@ fun LogsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     var filter by remember { mutableStateOf(LogFilter.ALL) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Clear logs?") },
+            text = { Text("All log entries will be removed. This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        AppLogger.clear()
+                        showClearConfirm = false
+                    },
+                ) {
+                    Text("Clear")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 
     val countsByFilter: Map<LogFilter, Int> = remember(entries) {
         LogFilter.entries.associateWith { option -> entries.count { it.level in option.levels } }
@@ -123,10 +149,11 @@ fun LogsScreen(onBack: () -> Unit) {
                     IconButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("iFoxy logs", AppLogger.exportAsText()))
+                        Toast.makeText(context, "Logs copied", Toast.LENGTH_SHORT).show()
                     }) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = "Copy logs")
                     }
-                    IconButton(onClick = { AppLogger.clear() }) {
+                    IconButton(onClick = { showClearConfirm = true }) {
                         Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear logs")
                     }
                 },
