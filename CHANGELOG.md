@@ -1,5 +1,34 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.28 combined release - UI/UX audit fix wave (both platforms)
+
+Desktop (still 0.2.3) changes from the UI/UX audit of 1.0.27:
+
+- Light theme is now a first-class citizen: all connection-state
+  colors, the latency badge, the login error banner, the sign-out
+  button and the subscription badge have dark-on-light values that
+  meet WCAG AA (previously as low as 1.5:1).
+- Changing location while connected now reconnects the tunnel to
+  the new location (Android parity) instead of showing the new
+  location as if it were active.
+- Accessibility: drawers trap focus; native buttons and the
+  tunnel-mode select have visible focus; server rows are real
+  listbox options with aria-selected; the tunnel-mode select's
+  styling no longer references undefined CSS variables.
+- Server list shows a loading state; copy feedback appears only
+  when the copy actually succeeds; clearing logs asks first; a
+  failed entitlement fetch shows "Subscription unknown"; if the
+  local service stops answering mid-session the UI says so after
+  three failed polls instead of freezing on "Connected".
+- Login uses real forms (native submit + email validation with
+  per-field error state); a Text & UI size setting (100/115/130%)
+  was added; reduced-motion preference is honored; the connected
+  home view is compacted to fit the window; disconnected speed and
+  latency readouts show "—" instead of fake zeros.
+
+Android 1.0.28 (versionCode 65): see android/CHANGELOG.md.
+Supersedes v1.0.27.
+
 ## v1.0.27 combined release - granular-audit fix wave (both platforms)
 
 Desktop (still 0.2.3) changes from the same audit as Android 1.0.27:
