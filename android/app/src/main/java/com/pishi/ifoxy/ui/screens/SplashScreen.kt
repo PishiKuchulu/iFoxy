@@ -9,19 +9,28 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pishi.ifoxy.R
 import com.pishi.ifoxy.data.FxaAuthRepository
 import com.pishi.ifoxy.data.SessionStatus
 import com.pishi.ifoxy.ui.components.RippleDotsLoader
-import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -33,6 +42,12 @@ fun SplashScreen(
     onSignedIn: () -> Unit,
     onNeedsLogin: () -> Unit,
 ) {
+    var showStillWorking by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(3_000)
+        showStillWorking = true
+    }
+
     LaunchedEffect(Unit) {
         delay(500)
         val status = withTimeoutOrNull(SESSION_RESTORE_TIMEOUT_MS) {
@@ -49,10 +64,16 @@ fun SplashScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(IFoxyBgDark),
+            .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.semantics {
+                liveRegion = LiveRegionMode.Polite
+                contentDescription = "Loading"
+            },
+        ) {
             Image(
                 // Raster copy of the launcher icon: R.mipmap.ic_launcher
                 // resolves to the adaptive-icon XML on API 26+, which
@@ -64,8 +85,17 @@ fun SplashScreen(
                     .clip(RoundedCornerShape(24.dp)),
             )
             Spacer(Modifier.height(36.dp))
-            // Ripple-dots loader (dark-surface ink, matching the splash bg).
-            RippleDotsLoader(ink = Color(0xFFF5F5F7), size = 72.dp)
+            // Ripple-dots loader, inked with the theme's on-background
+            // color so it tracks the resolved splash background.
+            RippleDotsLoader(ink = MaterialTheme.colorScheme.onBackground, size = 72.dp)
+            if (showStillWorking) {
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    "Still working…",
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    fontSize = 13.sp,
+                )
+            }
         }
     }
 }
