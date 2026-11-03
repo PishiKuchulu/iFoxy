@@ -16,7 +16,7 @@ val IFoxyNeonOrange = Color(0xFFFF7A1A)
 val IFoxyGreen = Color(0xFF22C55E)
 val IFoxyMapOnYellow = Color(0xFFDE9E00)
 val IFoxyErrorOnDark = Color(0xFFFFB4AB)
-val IFoxyErrorOnYellow = Color(0xFFB3261E)
+val IFoxyErrorOnYellow = Color(0xFF8C1D18)
 
 val md_theme_light_primary = Color(0xFFA03A00)
 val md_theme_light_onPrimary = Color(0xFFFFFFFF)
