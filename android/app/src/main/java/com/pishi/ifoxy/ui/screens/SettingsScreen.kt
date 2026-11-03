@@ -16,15 +16,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -69,7 +73,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -87,6 +96,7 @@ import com.pishi.ifoxy.ui.components.UpdateUiState
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import com.pishi.ifoxy.ui.theme.IFoxyCardDark
 import com.pishi.ifoxy.ui.theme.IFoxyInk
+import com.pishi.ifoxy.ui.theme.LocalIIFoxyStatusColors
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import com.pishi.ifoxy.ui.theme.ThemeController
@@ -385,12 +395,13 @@ fun SettingsScreen(
                         onSignOut()
                         accountsTick++
                     },
+                    modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     Text("Sign out")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSignOutConfirm = false }) {
+                TextButton(onClick = { showSignOutConfirm = false }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Cancel")
                 }
             },
@@ -419,7 +430,16 @@ fun SettingsScreen(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+        // Same 520.dp content cap Home/Login use, so rows do not
+        // stretch edge-to-edge on tablets and foldables.
+        Column(
+            Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .fillMaxHeight()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -436,19 +456,22 @@ fun SettingsScreen(
                 headlineContent = { Text("Verify exit location") },
                 supportingContent = { Text("Check that the tunnel exits in the selected country") },
                 trailingContent = {
+                    // Display-only switch: the row carries the toggleable
+                    // semantics, so TalkBack sees ONE switch node per row
+                    // instead of a silent row plus a separate switch.
                     Switch(
                         checked = exitCheckEnabled,
-                        onCheckedChange = {
-                            exitCheckEnabled = it
-                            settingsStore.exitCheckEnabled = it
-                        },
+                        onCheckedChange = null,
                     )
                 },
-                modifier = Modifier.clickable {
-                    val next = !exitCheckEnabled
-                    exitCheckEnabled = next
-                    settingsStore.exitCheckEnabled = next
-                },
+                modifier = Modifier.toggleable(
+                    value = exitCheckEnabled,
+                    role = Role.Switch,
+                    onValueChange = {
+                        exitCheckEnabled = it
+                        settingsStore.exitCheckEnabled = it
+                    },
+                ),
             )
             ListItem(
                 headlineContent = { Text("Tunnel MTU") },
@@ -484,7 +507,7 @@ fun SettingsScreen(
                         SettingsStore.DnsProvider.CUSTOM -> customDohUrl.ifBlank { "Custom DoH (Not configured)" }
                         else -> dnsProvider.label
                     }
-                    Text(subtitle)
+                    Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showDnsProviderDialog = true },
@@ -497,7 +520,7 @@ fun SettingsScreen(
                         SettingsStore.BootstrapDnsProvider.SYSTEM -> "System DNS"
                         else -> bootstrapDnsProvider.label
                     }
-                    Text(subtitle)
+                    Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showBootstrapDnsDialog = true },
@@ -511,21 +534,21 @@ fun SettingsScreen(
                 trailingContent = {
                     Switch(
                         checked = proxyOnlyMode,
-                        onCheckedChange = {
-                            proxyOnlyMode = it
-                            settingsStore.proxyOnlyMode = it
-                        },
+                        onCheckedChange = null,
                     )
                 },
-                modifier = Modifier.clickable {
-                    val next = !proxyOnlyMode
-                    proxyOnlyMode = next
-                    settingsStore.proxyOnlyMode = next
-                },
+                modifier = Modifier.toggleable(
+                    value = proxyOnlyMode,
+                    role = Role.Switch,
+                    onValueChange = {
+                        proxyOnlyMode = it
+                        settingsStore.proxyOnlyMode = it
+                    },
+                ),
             )
             ListItem(
                 headlineContent = { Text("Local address") },
-                supportingContent = { Text(socksBindAddress) },
+                supportingContent = { Text(socksBindAddress, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showSocksBindDialog = true },
             )
@@ -541,17 +564,17 @@ fun SettingsScreen(
                 trailingContent = {
                     Switch(
                         checked = httpProxyEnabled,
-                        onCheckedChange = {
-                            httpProxyEnabled = it
-                            settingsStore.httpProxyEnabled = it
-                        },
+                        onCheckedChange = null,
                     )
                 },
-                modifier = Modifier.clickable {
-                    val next = !httpProxyEnabled
-                    httpProxyEnabled = next
-                    settingsStore.httpProxyEnabled = next
-                },
+                modifier = Modifier.toggleable(
+                    value = httpProxyEnabled,
+                    role = Role.Switch,
+                    onValueChange = {
+                        httpProxyEnabled = it
+                        settingsStore.httpProxyEnabled = it
+                    },
+                ),
             )
             if (httpProxyEnabled) {
                 ListItem(
@@ -583,7 +606,7 @@ fun SettingsScreen(
             SettingsSection(title = "Advanced", darkTheme = darkTheme) {
             ListItem(
                 headlineContent = { Text("Custom edge address") },
-                supportingContent = { Text(customEdgeAddress.ifBlank { "Not set" }) },
+                supportingContent = { Text(customEdgeAddress.ifBlank { "Not set" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showEdgeAddressDialog = true },
             )
@@ -599,17 +622,17 @@ fun SettingsScreen(
                 trailingContent = {
                     Switch(
                         checked = upstreamProxyEnabled,
-                        onCheckedChange = {
-                            upstreamProxyEnabled = it
-                            settingsStore.upstreamProxyEnabled = it
-                        },
+                        onCheckedChange = null,
                     )
                 },
-                modifier = Modifier.clickable {
-                    val next = !upstreamProxyEnabled
-                    upstreamProxyEnabled = next
-                    settingsStore.upstreamProxyEnabled = next
-                },
+                modifier = Modifier.toggleable(
+                    value = upstreamProxyEnabled,
+                    role = Role.Switch,
+                    onValueChange = {
+                        upstreamProxyEnabled = it
+                        settingsStore.upstreamProxyEnabled = it
+                    },
+                ),
             )
             if (upstreamProxyEnabled && upstreamProxyHost.isBlank()) {
                 Text(
@@ -635,6 +658,8 @@ fun SettingsScreen(
                             } else {
                                 "$upstreamProxyHost:$upstreamProxyPort"
                             },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
                     trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
@@ -643,7 +668,11 @@ fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("Proxy credentials") },
                     supportingContent = {
-                        Text(if (upstreamProxyUsername.isBlank()) "None" else upstreamProxyUsername)
+                        Text(
+                            if (upstreamProxyUsername.isBlank()) "None" else upstreamProxyUsername,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     },
                     trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                     modifier = Modifier.clickable { showUpstreamProxyCredentialsDialog = true },
@@ -725,7 +754,7 @@ fun SettingsScreen(
             storedAccounts.forEach { account ->
                 val isActive = account.id == activeAccountId
                 ListItem(
-                    headlineContent = { Text(account.email) },
+                    headlineContent = { Text(account.email, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = {
                         Text(
                             if (isActive) {
@@ -740,7 +769,7 @@ fun SettingsScreen(
                             if (isActive) Icons.Filled.CheckCircle else Icons.Filled.AccountCircle,
                             contentDescription = null,
                             tint = if (isActive) {
-                                Color(0xFF22C55E)
+                                LocalIIFoxyStatusColors.current.connected
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
@@ -754,6 +783,7 @@ fun SettingsScreen(
                                         onSwitchAccount(account.id)
                                         accountsTick++
                                     },
+                                    modifier = Modifier.heightIn(min = 48.dp),
                                 ) {
                                     Text("Use")
                                 }
@@ -779,17 +809,17 @@ fun SettingsScreen(
                 trailingContent = {
                     Switch(
                         checked = accountAlertsEnabled,
-                        onCheckedChange = {
-                            accountAlertsEnabled = it
-                            settingsStore.accountAlertsEnabled = it
-                        },
+                        onCheckedChange = null,
                     )
                 },
-                modifier = Modifier.clickable {
-                    val next = !accountAlertsEnabled
-                    accountAlertsEnabled = next
-                    settingsStore.accountAlertsEnabled = next
-                },
+                modifier = Modifier.toggleable(
+                    value = accountAlertsEnabled,
+                    role = Role.Switch,
+                    onValueChange = {
+                        accountAlertsEnabled = it
+                        settingsStore.accountAlertsEnabled = it
+                    },
+                ),
             )
             Button(
                 onClick = { showSignOutConfirm = true },
@@ -799,6 +829,7 @@ fun SettingsScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(min = 48.dp)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
@@ -828,18 +859,20 @@ fun SettingsScreen(
                                 accountPendingRemoval = null
                                 accountsTick++
                             },
+                            modifier = Modifier.heightIn(min = 48.dp),
                         ) {
                             Text("Remove")
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { accountPendingRemoval = null }) {
+                        TextButton(onClick = { accountPendingRemoval = null }, modifier = Modifier.heightIn(min = 48.dp)) {
                             Text("Cancel")
                         }
                     },
                 )
             }
             Spacer(Modifier.height(4.dp))
+        }
         }
     }
 }
@@ -924,12 +957,13 @@ private fun DnsProviderPickerDialog(
             TextButton(
                 onClick = { onConfirm(selectedProvider, urlText.trim()) },
                 enabled = canSave,
+                modifier = Modifier.heightIn(min = 48.dp),
             ) {
                 Text("Save")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1008,12 +1042,13 @@ private fun BootstrapDnsPickerDialog(
             TextButton(
                 onClick = { onConfirm(selectedProvider, ipText.trim()) },
                 enabled = canSave,
+                modifier = Modifier.heightIn(min = 48.dp),
             ) {
                 Text("Save")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1054,10 +1089,10 @@ private fun CustomEdgeAddressDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(trimmed) }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { onConfirm(trimmed) }, enabled = isValid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1087,13 +1122,16 @@ private fun SocksBindAddressPickerDialog(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showOpenProxyWarning = false
-                    onConfirm(selected)
-                }) { Text("I understand, enable") }
+                TextButton(
+                    onClick = {
+                        showOpenProxyWarning = false
+                        onConfirm(selected)
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("I understand, enable") }
             },
             dismissButton = {
-                TextButton(onClick = { showOpenProxyWarning = false }) { Text("Cancel") }
+                TextButton(onClick = { showOpenProxyWarning = false }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
             },
         )
         return
@@ -1119,16 +1157,19 @@ private fun SocksBindAddressPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                if (selected != "127.0.0.1" && selected != current) {
-                    showOpenProxyWarning = true
-                } else {
-                    onConfirm(selected)
-                }
-            }) { Text("Save") }
+            TextButton(
+                onClick = {
+                    if (selected != "127.0.0.1" && selected != current) {
+                        showOpenProxyWarning = true
+                    } else {
+                        onConfirm(selected)
+                    }
+                },
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1162,10 +1203,10 @@ private fun SocksPortPickerDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = { parsedPort?.let { onConfirm(it) } }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { parsedPort?.let { onConfirm(it) } }, enabled = isValid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1199,10 +1240,10 @@ private fun HttpPortPickerDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = { parsedPort?.let { onConfirm(it) } }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { parsedPort?.let { onConfirm(it) } }, enabled = isValid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1234,10 +1275,10 @@ private fun UpstreamProxyTypePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
+            TextButton(onClick = { onConfirm(selected) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1282,10 +1323,10 @@ private fun TlsSplitModePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
+            TextButton(onClick = { onConfirm(selected) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1337,10 +1378,10 @@ private fun UpstreamProxyAddressDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { parsedPort?.let { onConfirm(host.trim(), it) } }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { parsedPort?.let { onConfirm(host.trim(), it) } }, enabled = isValid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1376,10 +1417,10 @@ private fun UpstreamProxyCredentialsDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(username, password) }) { Text("Save") }
+            TextButton(onClick = { onConfirm(username, password) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1460,7 +1501,7 @@ private fun SplitTunnelDialog(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 } else {
-                    LazyColumn(modifier = Modifier.height(360.dp)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                         items(filteredApps, key = { it.packageName }) { app ->
                             val isChecked = selected.contains(app.packageName)
                             Row(
@@ -1490,10 +1531,10 @@ private fun SplitTunnelDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
+            TextButton(onClick = { onConfirm(selected) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1525,7 +1566,14 @@ private fun SettingsSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { expanded = !expanded }
-                .padding(horizontal = 16.dp, vertical = 15.dp),
+                .semantics {
+                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                    onClick(label = "Toggle $title section") {
+                        expanded = !expanded
+                        true
+                    }
+                }
+                .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -1596,10 +1644,10 @@ private fun ThemePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
+            TextButton(onClick = { onConfirm(selected) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }
@@ -1648,10 +1696,10 @@ private fun MtuPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { parsedMtu?.let { onConfirm(it) } }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { parsedMtu?.let { onConfirm(it) } }, enabled = isValid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         },
     )
 }

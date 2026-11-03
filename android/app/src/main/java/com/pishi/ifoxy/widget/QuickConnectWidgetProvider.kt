@@ -134,11 +134,11 @@ class QuickConnectWidgetProvider : AppWidgetProvider() {
             }
 
             views.setImageViewResource(R.id.widget_background, bgRes)
-            views.setImageViewResource(R.id.widget_button, android.R.drawable.ic_lock_lock)
+            views.setImageViewResource(R.id.widget_button, R.drawable.ic_widget_power)
             views.setInt(R.id.widget_button, "setColorFilter", iconColor)
 
-            // A text status under the button: the color of the padlock
-            // alone does not say WHICH state the tunnel is in, and the
+            // A text status under the button: the color of the power
+            // icon alone does not say WHICH state the tunnel is in, and the
             // button's accessibility label must carry the state too.
             val statusText = when (state) {
                 ConnectionState.CONNECTED -> {

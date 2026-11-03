@@ -64,12 +64,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pishi.ifoxy.IFoxyApp
@@ -91,6 +94,7 @@ import com.pishi.ifoxy.ui.theme.IFoxyInk
 import com.pishi.ifoxy.ui.theme.IFoxyMapOnYellow
 import com.pishi.ifoxy.ui.theme.IFoxyNeonOrange
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
+import com.pishi.ifoxy.ui.theme.LocalIIFoxyStatusColors
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import com.pishi.ifoxy.ui.theme.ThemeController
 import com.pishi.ifoxy.ui.theme.ThemeMode
@@ -146,7 +150,7 @@ fun HomeScreen(
         label = "home-background",
     )
     val ink = if (darkTheme) Color.White else IFoxyInk
-    val muted = if (darkTheme) Color.White.copy(alpha = 0.55f) else IFoxyInk.copy(alpha = 0.62f)
+    val muted = if (darkTheme) Color.White.copy(alpha = 0.55f) else IFoxyInk.copy(alpha = 0.78f)
     val cardBg = if (darkTheme) IFoxyCardDark else Color.White
     val chipBg = if (darkTheme) IFoxyCardDark else IFoxyInk
     val errorColor = if (darkTheme) IFoxyErrorOnDark else IFoxyErrorOnYellow
@@ -402,14 +406,22 @@ fun HomeScreen(
                                 ),
                                 color = ink,
                                 maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             Spacer(Modifier.height(2.dp))
                             when {
                                 connected -> Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Status colors come from the theme's
+                                    // status palette: on the white light-theme
+                                    // card the bright brand green is only
+                                    // 2.28:1, while the palette's light-theme
+                                    // connected green is the darker one meant
+                                    // for this surface.
+                                    val connectedColor = LocalIIFoxyStatusColors.current.connected
                                     Icon(
                                         imageVector = Icons.Filled.CheckCircle,
                                         contentDescription = null,
-                                        tint = IFoxyGreen,
+                                        tint = connectedColor,
                                         modifier = Modifier.size(13.dp),
                                     )
                                     Spacer(Modifier.width(4.dp))
@@ -420,7 +432,7 @@ fun HomeScreen(
                                             fontWeight = FontWeight.Medium,
                                             fontSize = 12.sp,
                                         ),
-                                        color = IFoxyGreen,
+                                        color = connectedColor,
                                     )
                                 }
                                 connecting -> Text(
@@ -624,7 +636,8 @@ fun HomeScreen(
                         color = errorColor,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp),
+                            .padding(horizontal = 8.dp)
+                            .semantics { liveRegion = LiveRegionMode.Polite },
                     )
                 }
 
@@ -643,6 +656,8 @@ fun HomeScreen(
                             fontSize = 12.sp,
                         ),
                         color = muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -786,7 +801,7 @@ fun HomeScreen(
                             .align(Alignment.CenterHorizontally)
                             .clip(RoundedCornerShape(50))
                             .background(if (darkTheme) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.38f))
-                            .padding(horizontal = 18.dp, vertical = 9.dp),
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
                     ) {
                         Text(
                             text = when {
