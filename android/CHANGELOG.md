@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.0.27 (versionCode 64) - granular-audit fix wave
+
+Fixes from a full component-by-component audit of the app (UI/UX,
+logic, performance, security). Highlights:
+
+- Server list: tapping a city with no available servers now shows the
+  message (it was set but never displayed); stale-cache caption +
+  Retry added; country-header chevron removed; city rows are 48 dp
+  radio-selectable rows.
+- Theme: wallpaper dynamic color is off by default, so the brand
+  palette is what ships; a Theme picker (System/Light/Dark) now
+  exists in Settings; footer text contrast raised.
+- Browser sign-in hardening: the spoofable default-origin bridge
+  overload is gone; a missing `verified` flag now counts as
+  unverified and success-URL matching is stricter; FLAG_SECURE
+  protects the sign-in screen; file/content access disabled in the
+  WebView; a caption + delayed Cancel appear during the token
+  exchange.
+- Home: live download/upload rates; quota pill also shows while
+  disconnected; real-IP lookup honors the "Verify exit location"
+  toggle and can be shown while disconnected; scrollable layout
+  (no clipping at large font sizes); connect debounce + connecting
+  spinner; picking a location while connected now restarts the
+  tunnel to the new location.
+- Settings: values refresh on resume; every save confirms with a
+  snackbar ("applies on next connection" for connection settings);
+  field-level error texts; sign-out asks for confirmation; dialog
+  inputs survive rotation; new Account-alerts toggle.
+- Logs: account emails are masked centrally in the in-app log;
+  Copy confirms with a toast; Clear asks first.
+- Updater: a failed update check now reports "Update check failed"
+  instead of "You're up to date".
+- Widget shows its connection state as text, not color alone.
+
+Deferred with reasons (unchanged by this wave): surfacing proxy
+failover health in the UI; a monochrome QS-tile brand icon (no
+suitable drawable ships yet).
+
+
 ## 1.0.26 (versionCode 63) - token exchange inside the browser page
 
 - The /oauth/token exchange after a browser sign-in now runs inside the

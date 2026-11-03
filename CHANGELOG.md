@@ -1,5 +1,43 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.27 combined release - granular-audit fix wave (both platforms)
+
+Desktop (still 0.2.3) changes from the same audit as Android 1.0.27:
+
+- The Logs drawer now shows the real backend log (the `get_logs`
+  bridge command existed but was never called); hardcoded seed lines
+  removed; Copy and Clear buttons added.
+- Power button: an in-flight guard ends the connect/cancel race
+  with the 1-second status poll; the two 1-second status loops are
+  merged into one.
+- Settings honesty: the subscription badge is driven by the real
+  entitlement; the DNS row is labelled as built-in Cloudflare info;
+  tunnel mode and theme now persist across restarts; kill-switch
+  status in Full mode is disclosed; logout failures are no longer
+  silently ignored.
+- Home: session totals + duration row; the local proxy endpoint
+  (127.0.0.1:10800) is shown and copyable in Proxy Only mode; the
+  latency badge now shows the connected node's probed latency.
+- Server list: a failed fetch shows an error + Retry instead of
+  invented fallback locations; the current selection is marked;
+  search is debounced; the list loads on session resume.
+- Accessibility: keyboard operation for the power button, location
+  card and server rows; dialog semantics, Escape/backdrop close and
+  focus management for drawers; live regions for status and errors;
+  contrast fixes (button text, tertiary text, badges, error banner).
+- The invented-fallback and dead-code cleanups: FALLBACK_SERVERS
+  removed; token meta fallback removed; baked-in CSP aligned with
+  the served policy; account emails masked in UI log lines.
+
+Deferred with reasons: browser-based sign-in for desktop (the
+Android 406 fix) remains a separate project — desktop API sign-in
+exposure is still unverified; DNS/MTU stay engine-fixed values
+this wave (now disclosed in the UI); no desktop updater or
+multi-account vault yet (feature parity, not defects).
+
+Android 1.0.27 (versionCode 64): see android/CHANGELOG.md.
+Supersedes v1.0.26.
+
 ## v1.0.26 combined release - in-page token exchange (desktop unchanged)
 
 The desktop code is unchanged in this release (still 0.2.3). Android
