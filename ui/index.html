@@ -36,35 +36,39 @@
 
         <!-- Credentials Step -->
         <div id="login-step-credentials">
+          <form id="form-credentials" novalidate>
           <div class="form-group">
             <label class="form-label" for="login-email">Firefox Account Email</label>
-            <input type="email" id="login-email" class="form-input" placeholder="user@example.com" autocomplete="email">
+            <input type="email" id="login-email" class="form-input" placeholder="user@example.com" autocomplete="email" aria-describedby="login-error">
           </div>
           <div class="form-group">
             <label class="form-label" for="login-password">Password</label>
-            <input type="password" id="login-password" class="form-input" placeholder="••••••••" autocomplete="current-password">
+            <input type="password" id="login-password" class="form-input" placeholder="••••••••" autocomplete="current-password" aria-describedby="login-error">
           </div>
           <div id="login-error" class="login-error-banner" role="alert" style="display: none;"></div>
-          <button class="btn-primary" id="btn-submit-login">
+          <button type="submit" class="btn-primary" id="btn-submit-login">
             <span class="btn-text">Continue</span>
             <div class="btn-spinner" style="display: none;"></div>
           </button>
           <p class="login-note">Signing in with Google or Apple accounts is not supported — use your Firefox email and password.</p>
+          </form>
         </div>
 
         <!-- 2FA Step -->
         <div id="login-step-2fa" style="display: none;">
+          <form id="form-2fa" novalidate>
           <p class="twofa-hint">Enter the 6-digit confirmation code sent to your email:</p>
           <div class="form-group">
             <label class="form-label" for="login-code">Confirmation Code</label>
-            <input type="text" id="login-code" class="form-input input-code" placeholder="123456" maxlength="6" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*">
+            <input type="text" id="login-code" class="form-input input-code" placeholder="123456" maxlength="6" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" aria-describedby="twofa-error">
           </div>
           <div id="twofa-error" class="login-error-banner" role="alert" style="display: none;"></div>
-          <button class="btn-primary" id="btn-submit-2fa">
+          <button type="submit" class="btn-primary" id="btn-submit-2fa">
             <span class="btn-text">Verify & Sign In</span>
             <div class="btn-spinner" style="display: none;"></div>
           </button>
-          <button class="btn-secondary" id="btn-back-to-credentials" style="margin-top: 10px;">Back</button>
+          <button type="button" class="btn-secondary" id="btn-back-to-credentials" style="margin-top: 10px;">Back</button>
+          </form>
         </div>
       </div>
     </div>
@@ -122,7 +126,7 @@
           </div>
           <div class="speed-info">
             <h4>Download</h4>
-            <p id="speed-down">0.0 KB/s</p>
+            <p id="speed-down">—</p>
           </div>
         </div>
 
@@ -134,7 +138,7 @@
           </div>
           <div class="speed-info">
             <h4>Upload</h4>
-            <p id="speed-up">0.0 KB/s</p>
+            <p id="speed-up">—</p>
           </div>
         </div>
       </div>
@@ -152,7 +156,7 @@
             <p id="current-location-sub">Fastest Edge Node</p>
           </div>
         </div>
-        <span class="latency-badge" id="current-latency">Auto</span>
+        <span class="latency-badge inactive" id="current-latency">—</span>
       </div>
 
       <!-- Session Totals -->
@@ -164,7 +168,7 @@
       <!-- Monthly Allowance Progress -->
       <div class="quota-card">
         <div class="quota-header">
-          <span class="quota-title">Monthly Free Quota</span>
+          <span class="quota-title" id="quota-title">Monthly Free Quota</span>
           <span class="quota-val" id="quota-text">Quota unavailable</span>
         </div>
         <div class="progress-track">
@@ -184,7 +188,6 @@
   <!-- Server Selector Drawer -->
   <div class="drawer-backdrop" id="modal-servers" role="dialog" aria-modal="true" aria-label="Choose location">
     <div class="drawer-panel">
-      <div class="drawer-handle"></div>
       <div class="drawer-header">
         <h2>Choose Location</h2>
         <button class="icon-btn" id="btn-close-servers" aria-label="Close location list">
@@ -199,7 +202,7 @@
         </svg>
         <input type="text" id="server-search" placeholder="Search countries or cities..." aria-label="Search countries or cities">
       </div>
-      <div class="server-list-scroll" id="server-list-container">
+      <div class="server-list-scroll" id="server-list-container" role="listbox" aria-label="Available locations" aria-live="polite">
         <!-- Populated via JS -->
       </div>
     </div>
@@ -208,7 +211,6 @@
   <!-- Settings & Account Drawer -->
   <div class="drawer-backdrop" id="modal-settings" role="dialog" aria-modal="true" aria-label="Settings and account">
     <div class="drawer-panel">
-      <div class="drawer-handle"></div>
       <div class="drawer-header">
         <h2>Settings & Account</h2>
         <button class="icon-btn" id="btn-close-settings" aria-label="Close settings">
@@ -239,7 +241,7 @@
           </div>
           <div class="settings-row">
             <span>Tunnel Mode</span>
-            <select id="setting-tunnel-mode" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px;">
+            <select id="setting-tunnel-mode" class="tunnel-mode-select" aria-label="Tunnel mode">
               <option value="proxy_only" selected>Proxy Only (Safe Default)</option>
               <option value="full">Full System (Wintun L3 TUN)</option>
             </select>
@@ -252,6 +254,14 @@
           <div class="settings-row">
             <span>Secure DNS</span>
             <span class="settings-value">Cloudflare (built-in)</span>
+          </div>
+          <div class="settings-row">
+            <span>Text &amp; UI size</span>
+            <span class="zoom-controls">
+              <button class="btn-mini zoom-btn" data-zoom="100" aria-pressed="true">100%</button>
+              <button class="btn-mini zoom-btn" data-zoom="115" aria-pressed="false">115%</button>
+              <button class="btn-mini zoom-btn" data-zoom="130" aria-pressed="false">130%</button>
+            </span>
           </div>
         </div>
 
@@ -267,10 +277,9 @@
 
   <!-- Connection Logs Drawer -->
   <div class="drawer-backdrop" id="modal-logs" role="dialog" aria-modal="true" aria-label="Connection logs">
-    <div class="drawer-panel" style="max-height: 90vh;">
-      <div class="drawer-handle"></div>
+    <div class="drawer-panel">
       <div class="drawer-header">
-        <h2>Live Connection Logs</h2>
+        <h2>Connection Logs</h2>
         <div class="drawer-actions">
           <button class="btn-mini" id="btn-copy-logs">Copy</button>
           <button class="btn-mini" id="btn-clear-logs">Clear</button>
