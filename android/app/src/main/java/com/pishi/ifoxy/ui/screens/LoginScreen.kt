@@ -1,5 +1,6 @@
 package com.pishi.ifoxy.ui.screens
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -43,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.pishi.ifoxy.data.FxaAuthRepository
 import com.pishi.ifoxy.data.isUnconfirmedSession
 import com.pishi.ifoxy.ui.components.WorldMapLayer
@@ -128,6 +132,24 @@ fun LoginScreen(
             },
         )
         return
+    }
+
+    // This screen is always drawn on the dark brand background, but the
+    // theme derives status-bar icon appearance from the app theme: in
+    // the light theme it picks dark icons, which vanish on this dark
+    // surface. Force light icons while composed and hand back the
+    // theme-driven value (captured before overriding) on dispose.
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val controller = (view.context as? Activity)?.window
+            ?.let { WindowCompat.getInsetsController(it, view) }
+        val themeDrivenAppearance = controller?.isAppearanceLightStatusBars
+        controller?.isAppearanceLightStatusBars = false
+        onDispose {
+            if (themeDrivenAppearance != null) {
+                controller?.isAppearanceLightStatusBars = themeDrivenAppearance
+            }
+        }
     }
 
     Box(

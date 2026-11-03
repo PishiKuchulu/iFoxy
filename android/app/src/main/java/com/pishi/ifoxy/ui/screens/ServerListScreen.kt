@@ -1,5 +1,6 @@
 package com.pishi.ifoxy.ui.screens
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -15,20 +17,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,12 +47,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.pishi.ifoxy.data.ProxyStateStore
 import com.pishi.ifoxy.data.RECOMMENDED_COUNTRY_CODE
 import com.pishi.ifoxy.data.ServerListClient
@@ -95,6 +109,25 @@ fun ServerListScreen(
     var tapError by remember { mutableStateOf<String?>(null) }
     var refreshFailed by remember { mutableStateOf(false) }
     var refreshAttempt by remember { mutableStateOf(0) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // This screen's background is always the dark brand color, but the
+    // theme derives status-bar icon appearance from the app theme: in
+    // the light theme it picks dark icons, which vanish on this dark
+    // surface. Force light icons while composed and hand back the
+    // theme-driven value (captured before overriding) on dispose.
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val controller = (view.context as? Activity)?.window
+            ?.let { WindowCompat.getInsetsController(it, view) }
+        val themeDrivenAppearance = controller?.isAppearanceLightStatusBars
+        controller?.isAppearanceLightStatusBars = false
+        onDispose {
+            if (themeDrivenAppearance != null) {
+                controller?.isAppearanceLightStatusBars = themeDrivenAppearance
+            }
+        }
+    }
 
     val selectedState by proxyStateStore.selectedProxyFlow.collectAsState()
 
@@ -139,9 +172,35 @@ fun ServerListScreen(
         countries.sortedWith(compareBy({ it.code != RECOMMENDED_COUNTRY_CODE }, { it.name }))
     }
 
-    val rows = remember(ordered) {
+    // Search filter: a country survives on its own name match (with all
+    // its cities) or with only the cities whose names match. Selection
+    // and candidates still resolve against the full `countries` list.
+    val visibleCountries = remember(ordered, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            ordered
+        } else {
+            ordered.mapNotNull { country ->
+                when {
+                    country.name.contains(query, ignoreCase = true) -> country
+                    else -> {
+                        val matchingCities = country.cities.filter {
+                            it.name.contains(query, ignoreCase = true)
+                        }
+                        if (matchingCities.isEmpty()) {
+                            null
+                        } else {
+                            country.copy(cities = matchingCities)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val rows = remember(visibleCountries) {
         buildList {
-            for (country in ordered) {
+            for (country in visibleCountries) {
                 if (country.code == RECOMMENDED_COUNTRY_CODE) {
                     add(LocationRow.RecommendedRow(country))
                     continue
@@ -157,7 +216,16 @@ fun ServerListScreen(
             .fillMaxSize()
             .background(IFoxyBgDark)
             .statusBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Same 520.dp content cap Home/Login use (the dark background
+        // stays full-bleed on the root column; only content is capped).
+        Column(
+            modifier = Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -182,6 +250,66 @@ fun ServerListScreen(
             )
         }
 
+        if (countries.isNotEmpty()) {
+            BasicTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                singleLine = true,
+                textStyle = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 14.sp,
+                    color = Color.White,
+                ),
+                cursorBrush = SolidColor(IFoxyYellow),
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(IFoxyCardDark)
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = Muted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Box(Modifier.weight(1f)) {
+                            if (searchQuery.isEmpty()) {
+                                Text(
+                                    "Search locations",
+                                    style = TextStyle(
+                                        fontFamily = PoppinsFamily,
+                                        fontWeight = FontWeight.Normal,
+                                        fontSize = 14.sp,
+                                    ),
+                                    color = Color.White.copy(alpha = 0.45f),
+                                )
+                            }
+                            innerTextField()
+                        }
+                        if (searchQuery.isNotEmpty()) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Clear search",
+                                tint = Muted,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable { searchQuery = "" },
+                            )
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
+
         if (tapError != null) {
             Text(
                 text = tapError.orEmpty(),
@@ -193,7 +321,10 @@ fun ServerListScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    // The banner auto-dismisses after 3.5 s; assertive so
+                    // TalkBack announces it before it is gone.
+                    .semantics { liveRegion = LiveRegionMode.Assertive },
             )
         }
 
@@ -217,7 +348,10 @@ fun ServerListScreen(
                         style = TextStyle(fontFamily = PoppinsFamily, fontSize = 14.sp),
                     )
                     Spacer(Modifier.height(12.dp))
-                    TextButton(onClick = { refreshAttempt++ }) {
+                    TextButton(
+                        onClick = { refreshAttempt++ },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
                         Text(
                             "Retry",
                             color = IFoxyYellow,
@@ -229,6 +363,22 @@ fun ServerListScreen(
                         )
                     }
                 }
+                rows.isEmpty() && countries.isNotEmpty() -> Text(
+                    // The full list loaded fine; only the search filter
+                    // matched nothing.
+                    text = "No locations match your search",
+                    textAlign = TextAlign.Center,
+                    color = Muted,
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.Normal,
+                        fontSize = 14.sp,
+                    ),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                )
                 else -> LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -342,6 +492,8 @@ fun ServerListScreen(
                                             fontSize = 15.5.sp,
                                         ),
                                         color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
@@ -385,22 +537,24 @@ fun ServerListScreen(
                                                 proxyStateStore.save(chosen)
                                                 onServerSelected()
                                             } else {
-                                                tapError = "No available servers in ${city.code}"
+                                                tapError = "No available servers in ${city.name.ifBlank { city.code }}"
                                             }
                                         }
-                                        .padding(start = 34.dp, top = 9.dp, bottom = 9.dp),
+                                        .padding(start = 32.dp, top = 9.dp, bottom = 9.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     RadioMarker(selected = isSelected)
                                     Spacer(Modifier.width(12.dp))
                                     Text(
-                                        city.code,
+                                        city.name.ifBlank { city.code },
                                         style = TextStyle(
                                             fontFamily = PoppinsFamily,
                                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                             fontSize = 14.5.sp,
                                         ),
                                         color = if (isSelected) Color.White else Color.White.copy(alpha = 0.82f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                     Spacer(Modifier.weight(1f))
                                     Text(
@@ -439,6 +593,7 @@ fun ServerListScreen(
                     }
                 }
             }
+        }
         }
     }
 }

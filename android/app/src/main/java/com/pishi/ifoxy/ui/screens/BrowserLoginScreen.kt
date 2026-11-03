@@ -1,12 +1,15 @@
 package com.pishi.ifoxy.ui.screens
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -41,11 +44,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
 import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.BrowserTokenRequest
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
@@ -382,6 +391,10 @@ internal fun BrowserLoginScreen(
     var pageTitle by remember { mutableStateOf("") }
     var pageProgress by remember { mutableIntStateOf(0) }
     var pageLoaded by remember { mutableStateOf(false) }
+    // Main-frame load failures (no network, HTTP error from Mozilla):
+    // without this the user stares at a blank WebView with a stuck
+    // progress bar and no way forward.
+    var loadError by remember { mutableStateOf<String?>(null) }
     val currentOnSession by rememberUpdatedState(onSessionCaptured)
     val currentOnCanceled by rememberUpdatedState(onCanceled)
     val currentExchange by rememberUpdatedState(exchangeToken)
@@ -397,6 +410,24 @@ internal fun BrowserLoginScreen(
         window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         onDispose {
             window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
+    // This screen's background is always the dark brand color, but the
+    // theme derives status-bar icon appearance from the app theme: in
+    // the light theme it picks dark icons, which vanish on this dark
+    // surface. Force light icons while composed and hand back the
+    // theme-driven value (captured before overriding) on dispose.
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val controller = (view.context as? Activity)?.window
+            ?.let { WindowCompat.getInsetsController(it, view) }
+        val themeDrivenAppearance = controller?.isAppearanceLightStatusBars
+        controller?.isAppearanceLightStatusBars = false
+        onDispose {
+            if (themeDrivenAppearance != null) {
+                controller?.isAppearanceLightStatusBars = themeDrivenAppearance
+            }
         }
     }
 
@@ -484,6 +515,7 @@ internal fun BrowserLoginScreen(
                     ),
                     color = Color.White,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     "You will return to iFoxy automatically after signing in",
@@ -550,7 +582,8 @@ internal fun BrowserLoginScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
             )
             // Sign-in failures must not lock the user out of diagnostics:
             // the logs are reachable straight from the error state.
@@ -567,6 +600,48 @@ internal fun BrowserLoginScreen(
                         fontSize = 12.5.sp,
                     ),
                 )
+            }
+        }
+        if (loadError != null) {
+            // The page itself failed to load (offline, HTTP error): the
+            // WebView below is blank, so the only useful actions are
+            // retrying the load or opening diagnostics.
+            Text(
+                text = loadError.orEmpty(),
+                color = IFoxyErrorOnDark,
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.5.sp,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            Row(Modifier.padding(horizontal = 8.dp)) {
+                TextButton(onClick = { webViewInstance?.reload() }) {
+                    Text(
+                        "Retry",
+                        color = IFoxyYellow,
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                        ),
+                    )
+                }
+                TextButton(onClick = onOpenLogs) {
+                    Text(
+                        "Open logs",
+                        color = IFoxyYellow,
+                        style = TextStyle(
+                            fontFamily = PoppinsFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                        ),
+                    )
+                }
             }
         }
         Box(Modifier.weight(1f)) {
@@ -627,10 +702,45 @@ internal fun BrowserLoginScreen(
                             ) {
                                 super.onPageStarted(view, url, favicon)
                                 pageLoaded = false
+                                loadError = null
                                 if (isSuccessUrl(url)) {
                                     bridge.onSessionVerified()
                                 }
                                 runCatching { view.evaluateJavascript(WEBCHANNEL_HOOK_JS, null) }
+                            }
+
+                            override fun onReceivedError(
+                                view: WebView,
+                                request: WebResourceRequest?,
+                                error: WebResourceError?,
+                            ) {
+                                super.onReceivedError(view, request, error)
+                                // Subresource failures are routine (trackers,
+                                // fonts); only a main-frame failure strands
+                                // the user on a dead page.
+                                if (request?.isForMainFrame == true) {
+                                    loadError = error?.description?.toString()
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: "Couldn't load the sign-in page. " +
+                                            "Check your connection and try again."
+                                }
+                            }
+
+                            override fun onReceivedHttpError(
+                                view: WebView,
+                                request: WebResourceRequest?,
+                                errorResponse: WebResourceResponse?,
+                            ) {
+                                super.onReceivedHttpError(view, request, errorResponse)
+                                if (request?.isForMainFrame == true) {
+                                    val status = errorResponse?.statusCode
+                                    loadError = if (status != null) {
+                                        "The sign-in page could not be loaded (HTTP $status). " +
+                                            "Please try again."
+                                    } else {
+                                        "The sign-in page could not be loaded. Please try again."
+                                    }
+                                }
                             }
 
                             override fun onPageFinished(view: WebView, url: String?) {

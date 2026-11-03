@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
@@ -36,8 +38,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.pishi.ifoxy.data.AppLogger
@@ -160,7 +164,18 @@ fun LogsScreen(onBack: () -> Unit) {
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Column(
+            Modifier.fillMaxSize().padding(padding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+        // Same 520.dp content cap Home/Login use, so log lines do not
+        // stretch edge-to-edge on tablets and foldables.
+        Column(
+            Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -205,14 +220,18 @@ fun LogsScreen(onBack: () -> Unit) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                             Text(
                                 "${timeFormat.format(Date(entry.timestampMillis))} ${entry.level.name} [${entry.tag}]",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                                 color = color,
                             )
-                            Text(entry.message, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                entry.message,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            )
                         }
                     }
                 }
             }
+        }
         }
     }
 }
