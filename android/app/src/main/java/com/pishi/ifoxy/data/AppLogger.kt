@@ -49,19 +49,35 @@ object AppLogger {
         if (BuildConfig.DEBUG) Log.d(tag, message)
     }
 
+    // Log lines end up on the clipboard / in shared files via the Logs
+    // screen, so email addresses (account identities) are masked at
+    // this single choke point before a message is stored or forwarded
+    // to logcat: first character of the local part and of the domain
+    // survive, e.g. "a***@e***.com". Runs only on messages containing
+    // '@', and allocates nothing for the common no-email case.
+    private val EMAIL_PATTERN = Regex("""([A-Za-z0-9])[\w.%+-]*@([A-Za-z0-9])[\w.-]*\.([A-Za-z]{2,})""")
+
+    private fun maskEmails(message: String): String {
+        if ('@' !in message) return message
+        return EMAIL_PATTERN.replace(message) { match ->
+            "${match.groupValues[1]}***@${match.groupValues[2]}***.${match.groupValues[3]}"
+        }
+    }
+
     fun i(tag: String, message: String) {
-        Log.i(tag, message)
-        log(LogLevel.INFO, tag, message)
+        val masked = maskEmails(message)
+        Log.i(tag, masked)
+        log(LogLevel.INFO, tag, masked)
     }
 
     fun w(tag: String, message: String, error: Throwable? = null) {
-        if (error != null) Log.w(tag, message, error) else Log.w(tag, message)
-        log(LogLevel.WARN, tag, if (error != null) "$message: ${error.message}" else message)
+        if (error != null) Log.w(tag, maskEmails(message), error) else Log.w(tag, maskEmails(message))
+        log(LogLevel.WARN, tag, maskEmails(if (error != null) "$message: ${error.message}" else message))
     }
 
     fun e(tag: String, message: String, error: Throwable? = null) {
-        if (error != null) Log.e(tag, message, error) else Log.e(tag, message)
-        log(LogLevel.ERROR, tag, if (error != null) "$message: ${error.message}" else message)
+        if (error != null) Log.e(tag, maskEmails(message), error) else Log.e(tag, maskEmails(message))
+        log(LogLevel.ERROR, tag, maskEmails(if (error != null) "$message: ${error.message}" else message))
     }
 
     private val currentSize = java.util.concurrent.atomic.AtomicInteger(0)

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,6 +48,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -111,8 +115,16 @@ class AppUpdateController(private val appContext: Context) {
         if (state is UpdateUiState.Checking || state is UpdateUiState.Downloading) return
         state = UpdateUiState.Checking
         scope.launch {
-            val found = runCatching { AppUpdateChecker.findUpdate(BuildConfig.VERSION_NAME) }
-                .getOrNull()
+            val found = try {
+                AppUpdateChecker.findUpdate(BuildConfig.VERSION_NAME)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // A failed check is NOT "up to date": surface it so the
+                // Settings row can say the check itself failed.
+                state = UpdateUiState.Failed("Couldn't check for updates")
+                return@launch
+            }
             state = if (found != null) {
                 dialogVisible = true
                 UpdateUiState.Available(found)
@@ -141,8 +153,22 @@ class AppUpdateController(private val appContext: Context) {
         downloadJob = scope.launch {
             try {
                 val file = withContext(Dispatchers.IO) {
+                    // Progress is reported per 64 KB chunk from the IO
+                    // thread; only publish a new state when the whole
+                    // percent actually changes, so the dialog and the
+                    // Settings row are not recomposed ~200 times for a
+                    // 13 MB download.
+                    var lastPublishedPercent = -1
                     downloadApk(info) { downloaded, total ->
-                        state = UpdateUiState.Downloading(info, downloaded, total)
+                        val percent = if (total > 0) {
+                            ((downloaded * 100) / total).toInt()
+                        } else {
+                            0
+                        }
+                        if (percent != lastPublishedPercent) {
+                            lastPublishedPercent = percent
+                            state = UpdateUiState.Downloading(info, downloaded, total)
+                        }
                     }
                 }
                 state = UpdateUiState.ReadyToInstall(info, file)
@@ -521,7 +547,12 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             modifier = Modifier.fillMaxWidth(),
                         )
                         BoxWithConstraints(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics {
+                                    progressBarRangeInfo =
+                                        ProgressBarRangeInfo(fraction, 0f..1f)
+                                },
                         ) {
                             val barWidth = maxWidth
                             Box(
@@ -611,7 +642,10 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                 ) {
                     when (state) {
                         is UpdateUiState.Available -> {
-                            TextButton(onClick = { controller.dismissDialog() }) {
+                            TextButton(
+                                onClick = { controller.dismissDialog() },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) {
                                 Text("Later", color = UpdateLabel, fontFamily = PoppinsFamily)
                             }
                             UpdateGradientButton("Download update") {
@@ -619,7 +653,10 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             }
                         }
                         is UpdateUiState.Downloading -> {
-                            TextButton(onClick = { controller.dismissDialog() }) {
+                            TextButton(
+                                onClick = { controller.dismissDialog() },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) {
                                 Text("Background", color = UpdateLabel, fontFamily = PoppinsFamily)
                             }
                             Button(
@@ -630,6 +667,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                                 ),
                                 shape = RoundedCornerShape(50),
                                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+                                modifier = Modifier.heightIn(min = 48.dp),
                             ) {
                                 Text(
                                     "Cancel",
@@ -639,7 +677,10 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             }
                         }
                         is UpdateUiState.ReadyToInstall -> {
-                            TextButton(onClick = { controller.dismissDialog() }) {
+                            TextButton(
+                                onClick = { controller.dismissDialog() },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) {
                                 Text("Later", color = UpdateLabel, fontFamily = PoppinsFamily)
                             }
                             UpdateGradientButton("Install") {
@@ -647,7 +688,10 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             }
                         }
                         is UpdateUiState.Failed -> {
-                            TextButton(onClick = { controller.dismissDialog() }) {
+                            TextButton(
+                                onClick = { controller.dismissDialog() },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) {
                                 Text("OK", color = UpdateLabel, fontFamily = PoppinsFamily)
                             }
                         }
@@ -692,6 +736,7 @@ private fun UpdateGradientButton(text: String, onClick: () -> Unit) {
         shape = RoundedCornerShape(50),
         contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
         modifier = Modifier
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(50))
             .background(
                 Brush.horizontalGradient(listOf(IFoxyNeonOrange, IFoxyYellow)),

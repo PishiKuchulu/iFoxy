@@ -50,6 +50,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -72,6 +75,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.pishi.ifoxy.BuildConfig
 import com.pishi.ifoxy.data.AccountStore
 import com.pishi.ifoxy.data.SettingsStore
@@ -84,7 +89,10 @@ import com.pishi.ifoxy.ui.theme.IFoxyCardDark
 import com.pishi.ifoxy.ui.theme.IFoxyInk
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
 import com.pishi.ifoxy.ui.theme.PoppinsFamily
+import com.pishi.ifoxy.ui.theme.ThemeController
+import com.pishi.ifoxy.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val GITHUB_URL = "https://github.com/PishiKuchulu/iFoxy"
@@ -104,6 +112,7 @@ fun SettingsScreen(
     darkTheme: Boolean,
     updateController: AppUpdateController,
     accountStore: AccountStore,
+    themeController: ThemeController,
     onSwitchAccount: (String) -> Unit,
     onRemoveAccount: (String) -> Unit,
     onAddAccount: () -> Unit,
@@ -131,6 +140,56 @@ fun SettingsScreen(
     var upstreamProxyPassword by remember { mutableStateOf(settingsStore.upstreamProxyPassword) }
     var excludedApps by remember { mutableStateOf(settingsStore.excludedApps) }
     var mtu by remember { mutableStateOf(settingsStore.mtu) }
+    var accountAlertsEnabled by remember { mutableStateOf(settingsStore.accountAlertsEnabled) }
+    var themeMode by remember { mutableStateOf(themeController.mode) }
+    var showThemeDialog by remember { mutableStateOf(false) }
+    var showSignOutConfirm by remember { mutableStateOf(false) }
+    var accountsTick by remember { mutableStateOf(0) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val settingsScope = rememberCoroutineScope()
+
+    fun notifySaved(tunnelScoped: Boolean = false) {
+        settingsScope.launch {
+            snackbarHostState.showSnackbar(
+                if (tunnelScoped) {
+                    "Saved \u2014 applies on next connection"
+                } else {
+                    "Saved"
+                },
+            )
+        }
+    }
+
+    // The states above are one-shot snapshots of the store: anything
+    // that changes a setting outside this screen (account switching,
+    // the widget, another flow) would otherwise stay invisible until
+    // the screen is recreated. Re-read everything on resume.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        exitCheckEnabled = settingsStore.exitCheckEnabled
+        dnsProvider = settingsStore.dnsProvider
+        customDohUrl = settingsStore.customDohUrl
+        bootstrapDnsProvider = settingsStore.bootstrapDnsProvider
+        customBootstrapIp = settingsStore.customBootstrapIp
+        socksBindAddress = settingsStore.socksBindAddress
+        socksPort = settingsStore.socksPort
+        httpProxyEnabled = settingsStore.httpProxyEnabled
+        httpProxyPort = settingsStore.httpProxyPort
+        proxyOnlyMode = settingsStore.proxyOnlyMode
+        customEdgeAddress = settingsStore.customEdgeAddress
+        upstreamProxyEnabled = settingsStore.upstreamProxyEnabled
+        upstreamProxyType = settingsStore.upstreamProxyType
+        upstreamProxyHost = settingsStore.upstreamProxyHost
+        upstreamProxyPort = settingsStore.upstreamProxyPort
+        upstreamProxyUsername = settingsStore.upstreamProxyUsername
+        upstreamProxyPassword = settingsStore.upstreamProxyPassword
+        excludedApps = settingsStore.excludedApps
+        mtu = settingsStore.mtu
+        tlsSplitMode = settingsStore.tlsSplitMode
+        accountAlertsEnabled = settingsStore.accountAlertsEnabled
+        themeMode = themeController.mode
+        accountsTick++
+    }
     var showDnsProviderDialog by remember { mutableStateOf(false) }
     var showBootstrapDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
@@ -153,6 +212,7 @@ fun SettingsScreen(
                 mtu = it
                 settingsStore.mtu = it
                 showMtuDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -168,6 +228,7 @@ fun SettingsScreen(
                 customDohUrl = url
                 settingsStore.customDohUrl = url
                 showDnsProviderDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -182,6 +243,7 @@ fun SettingsScreen(
                 customBootstrapIp = ip
                 settingsStore.customBootstrapIp = ip
                 showBootstrapDnsDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -193,6 +255,7 @@ fun SettingsScreen(
                 socksBindAddress = it
                 settingsStore.socksBindAddress = it
                 showSocksBindDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -204,6 +267,7 @@ fun SettingsScreen(
                 socksPort = it
                 settingsStore.socksPort = it
                 showSocksPortDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -215,6 +279,7 @@ fun SettingsScreen(
                 httpProxyPort = it
                 settingsStore.httpProxyPort = it
                 showHttpPortDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -226,6 +291,7 @@ fun SettingsScreen(
                 customEdgeAddress = it
                 settingsStore.customEdgeAddress = it
                 showEdgeAddressDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -237,6 +303,7 @@ fun SettingsScreen(
                 upstreamProxyType = it
                 settingsStore.upstreamProxyType = it
                 showUpstreamProxyTypeDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -251,6 +318,7 @@ fun SettingsScreen(
                 settingsStore.upstreamProxyHost = host
                 settingsStore.upstreamProxyPort = port
                 showUpstreamProxyAddressDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -265,6 +333,7 @@ fun SettingsScreen(
                 settingsStore.upstreamProxyUsername = username
                 settingsStore.upstreamProxyPassword = password
                 showUpstreamProxyCredentialsDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -276,6 +345,7 @@ fun SettingsScreen(
                 excludedApps = it
                 settingsStore.excludedApps = it
                 showSplitTunnelDialog = false
+                notifySaved(tunnelScoped = true)
             },
         )
     }
@@ -287,11 +357,48 @@ fun SettingsScreen(
                 tlsSplitMode = it
                 settingsStore.tlsSplitMode = it
                 showTlsSplitDialog = false
+                notifySaved(tunnelScoped = true)
+            },
+        )
+    }
+    if (showThemeDialog) {
+        ThemePickerDialog(
+            current = themeMode,
+            onDismiss = { showThemeDialog = false },
+            onConfirm = {
+                themeMode = it
+                themeController.set(it)
+                showThemeDialog = false
+                notifySaved()
+            },
+        )
+    }
+    if (showSignOutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSignOutConfirm = false },
+            title = { Text("Sign out?") },
+            text = { Text("You will need to sign in with your Firefox account again to reconnect.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showSignOutConfirm = false
+                        onSignOut()
+                        accountsTick++
+                    },
+                ) {
+                    Text("Sign out")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSignOutConfirm = false }) {
+                    Text("Cancel")
+                }
             },
         )
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = if (darkTheme) IFoxyBgDark else IFoxyYellow,
         topBar = {
             TopAppBar(
@@ -319,6 +426,12 @@ fun SettingsScreen(
         ) {
             Spacer(Modifier.height(2.dp))
             SettingsSection(title = "Connection", darkTheme = darkTheme, initiallyExpanded = true) {
+            Text(
+                "Connection changes apply on next connect.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
             ListItem(
                 headlineContent = { Text("Verify exit location") },
                 supportingContent = { Text("Check that the tunnel exits in the selected country") },
@@ -331,12 +444,34 @@ fun SettingsScreen(
                         },
                     )
                 },
+                modifier = Modifier.clickable {
+                    val next = !exitCheckEnabled
+                    exitCheckEnabled = next
+                    settingsStore.exitCheckEnabled = next
+                },
             )
             ListItem(
                 headlineContent = { Text("Tunnel MTU") },
                 supportingContent = { Text(mtu.toString()) },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showMtuDialog = true },
+            )
+
+            }
+            SettingsSection(title = "Appearance", darkTheme = darkTheme) {
+            ListItem(
+                headlineContent = { Text("Theme") },
+                supportingContent = {
+                    Text(
+                        when (themeMode) {
+                            ThemeMode.SYSTEM -> "Follow system"
+                            ThemeMode.LIGHT -> "Light"
+                            ThemeMode.DARK -> "Dark"
+                        },
+                    )
+                },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showThemeDialog = true },
             )
 
             }
@@ -382,6 +517,11 @@ fun SettingsScreen(
                         },
                     )
                 },
+                modifier = Modifier.clickable {
+                    val next = !proxyOnlyMode
+                    proxyOnlyMode = next
+                    settingsStore.proxyOnlyMode = next
+                },
             )
             ListItem(
                 headlineContent = { Text("Local address") },
@@ -406,6 +546,11 @@ fun SettingsScreen(
                             settingsStore.httpProxyEnabled = it
                         },
                     )
+                },
+                modifier = Modifier.clickable {
+                    val next = !httpProxyEnabled
+                    httpProxyEnabled = next
+                    settingsStore.httpProxyEnabled = next
                 },
             )
             if (httpProxyEnabled) {
@@ -460,7 +605,20 @@ fun SettingsScreen(
                         },
                     )
                 },
+                modifier = Modifier.clickable {
+                    val next = !upstreamProxyEnabled
+                    upstreamProxyEnabled = next
+                    settingsStore.upstreamProxyEnabled = next
+                },
             )
+            if (upstreamProxyEnabled && upstreamProxyHost.isBlank()) {
+                Text(
+                    "Proxy chaining is ON but no host is set \u2014 traffic will go direct",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
             if (upstreamProxyEnabled) {
                 ListItem(
                     headlineContent = { Text("Proxy type") },
@@ -553,12 +711,13 @@ fun SettingsScreen(
                 supportingContent = { Text(GITHUB_URL) },
                 leadingContent = { Icon(Icons.Filled.Code, contentDescription = null) },
                 modifier = Modifier.clickable {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
+                    }
                 },
             )
 
             }
-            var accountsTick by remember { mutableStateOf(0) }
             val storedAccounts = remember(accountsTick) { accountStore.accounts() }
             val activeAccountId = remember(accountsTick) { accountStore.activeAccountId }
             var accountPendingRemoval by remember { mutableStateOf<StoredAccount?>(null) }
@@ -614,11 +773,26 @@ fun SettingsScreen(
                 leadingContent = { Icon(Icons.Filled.PersonAdd, contentDescription = null) },
                 modifier = Modifier.clickable { onAddAccount() },
             )
-            Button(
-                onClick = {
-                    onSignOut()
-                    accountsTick++
+            ListItem(
+                headlineContent = { Text("Account alerts") },
+                supportingContent = { Text("Notify when iFoxy switches accounts (quota rotation)") },
+                trailingContent = {
+                    Switch(
+                        checked = accountAlertsEnabled,
+                        onCheckedChange = {
+                            accountAlertsEnabled = it
+                            settingsStore.accountAlertsEnabled = it
+                        },
+                    )
                 },
+                modifier = Modifier.clickable {
+                    val next = !accountAlertsEnabled
+                    accountAlertsEnabled = next
+                    settingsStore.accountAlertsEnabled = next
+                },
+            )
+            Button(
+                onClick = { showSignOutConfirm = true },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -678,7 +852,7 @@ private fun DnsProviderPickerDialog(
     onConfirm: (SettingsStore.DnsProvider, String) -> Unit,
 ) {
     var selectedProvider by remember { mutableStateOf(currentProvider) }
-    var urlText by remember { mutableStateOf(currentCustomUrl) }
+    var urlText by rememberSaveable { mutableStateOf(currentCustomUrl) }
     val isCustom = selectedProvider == SettingsStore.DnsProvider.CUSTOM
     val isValidCustomUrl = SettingsStore.isValidDohUrl(urlText)
     val canSave = !isCustom || isValidCustomUrl
@@ -729,11 +903,16 @@ private fun DnsProviderPickerDialog(
                 if (isCustom) {
                     OutlinedTextField(
                         value = urlText,
-                        onValueChange = { urlText = it.trim() },
+                        onValueChange = { urlText = it },
                         label = { Text("DoH URL (https://...)") },
                         placeholder = { Text("https://example.com/dns-query") },
                         singleLine = true,
                         isError = urlText.isNotBlank() && !isValidCustomUrl,
+                        supportingText = {
+                            if (urlText.isNotBlank() && !isValidCustomUrl) {
+                                Text("Enter a valid https:// DoH URL")
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 8.dp),
@@ -743,7 +922,7 @@ private fun DnsProviderPickerDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(selectedProvider, urlText) },
+                onClick = { onConfirm(selectedProvider, urlText.trim()) },
                 enabled = canSave,
             ) {
                 Text("Save")
@@ -763,7 +942,7 @@ private fun BootstrapDnsPickerDialog(
     onConfirm: (SettingsStore.BootstrapDnsProvider, String) -> Unit,
 ) {
     var selectedProvider by remember { mutableStateOf(currentProvider) }
-    var ipText by remember { mutableStateOf(currentCustomIp) }
+    var ipText by rememberSaveable { mutableStateOf(currentCustomIp) }
     val isCustom = selectedProvider == SettingsStore.BootstrapDnsProvider.CUSTOM
     val isValidCustomIp = SettingsStore.isValidIpAddress(ipText.trim())
     val canSave = !isCustom || isValidCustomIp
@@ -807,11 +986,16 @@ private fun BootstrapDnsPickerDialog(
                 if (isCustom) {
                     OutlinedTextField(
                         value = ipText,
-                        onValueChange = { ipText = it.trim() },
+                        onValueChange = { ipText = it },
                         label = { Text("Resolver IP address") },
                         placeholder = { Text("e.g. 76.76.2.2") },
                         singleLine = true,
                         isError = ipText.isNotBlank() && !isValidCustomIp,
+                        supportingText = {
+                            if (ipText.isNotBlank() && !isValidCustomIp) {
+                                Text("Enter a valid IP address")
+                            }
+                        },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -840,7 +1024,7 @@ private fun CustomEdgeAddressDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var value by remember { mutableStateOf(current) }
+    var value by rememberSaveable { mutableStateOf(current) }
     val trimmed = value.trim()
     val isValid = trimmed.isEmpty() || SettingsStore.isValidEdgeHost(trimmed)
 
@@ -855,6 +1039,11 @@ private fun CustomEdgeAddressDialog(
                     label = { Text("Host or IP") },
                     singleLine = true,
                     isError = !isValid,
+                    supportingText = {
+                        if (!isValid) {
+                            Text("Enter a valid host name or IP address")
+                        }
+                    },
                 )
                 Text(
                     "Leave empty to resolve the server hostname normally.",
@@ -950,7 +1139,7 @@ private fun SocksPortPickerDialog(
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit,
 ) {
-    var portText by remember { mutableStateOf(current.toString()) }
+    var portText by rememberSaveable { mutableStateOf(current.toString()) }
     val parsedPort = portText.toIntOrNull()
     val isValid = parsedPort != null && parsedPort in 1..65_535
 
@@ -964,6 +1153,11 @@ private fun SocksPortPickerDialog(
                 label = { Text("Port (1\u201365535)") },
                 singleLine = true,
                 isError = portText.isNotBlank() && !isValid,
+                supportingText = {
+                    if (portText.isNotBlank() && !isValid) {
+                        Text("Enter a port between 1 and 65535")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
         },
@@ -982,7 +1176,7 @@ private fun HttpPortPickerDialog(
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit,
 ) {
-    var portText by remember { mutableStateOf(current.toString()) }
+    var portText by rememberSaveable { mutableStateOf(current.toString()) }
     val parsedPort = portText.toIntOrNull()
     val isValid = parsedPort != null && parsedPort in 1..65_535
 
@@ -996,6 +1190,11 @@ private fun HttpPortPickerDialog(
                 label = { Text("Port (1\u201365535)") },
                 singleLine = true,
                 isError = portText.isNotBlank() && !isValid,
+                supportingText = {
+                    if (portText.isNotBlank() && !isValid) {
+                        Text("Enter a port between 1 and 65535")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
         },
@@ -1098,10 +1297,11 @@ private fun UpstreamProxyAddressDialog(
     onDismiss: () -> Unit,
     onConfirm: (String, Int) -> Unit,
 ) {
-    var host by remember { mutableStateOf(currentHost) }
-    var portText by remember { mutableStateOf(currentPort.toString()) }
+    var host by rememberSaveable { mutableStateOf(currentHost) }
+    var portText by rememberSaveable { mutableStateOf(currentPort.toString()) }
     val parsedPort = portText.toIntOrNull()
-    val isValid = host.isNotBlank() && parsedPort != null && parsedPort in 1..65_535
+    val isValidHost = SettingsStore.isValidEdgeHost(host.trim())
+    val isValid = host.isNotBlank() && isValidHost && parsedPort != null && parsedPort in 1..65_535
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1110,9 +1310,15 @@ private fun UpstreamProxyAddressDialog(
             Column {
                 OutlinedTextField(
                     value = host,
-                    onValueChange = { host = it.trim() },
+                    onValueChange = { host = it },
                     label = { Text("Host or IP") },
                     singleLine = true,
+                    isError = host.isNotBlank() && !isValidHost,
+                    supportingText = {
+                        if (host.isNotBlank() && !isValidHost) {
+                            Text("Enter a valid host name or IP address")
+                        }
+                    },
                 )
                 OutlinedTextField(
                     value = portText,
@@ -1120,13 +1326,18 @@ private fun UpstreamProxyAddressDialog(
                     label = { Text("Port (1\u201365535)") },
                     singleLine = true,
                     isError = portText.isNotBlank() && (parsedPort == null || parsedPort !in 1..65_535),
+                    supportingText = {
+                        if (portText.isNotBlank() && (parsedPort == null || parsedPort !in 1..65_535)) {
+                            Text("Enter a port between 1 and 65535")
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.padding(top = 8.dp),
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { parsedPort?.let { onConfirm(host, it) } }, enabled = isValid) { Text("Save") }
+            TextButton(onClick = { parsedPort?.let { onConfirm(host.trim(), it) } }, enabled = isValid) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
@@ -1141,8 +1352,8 @@ private fun UpstreamProxyCredentialsDialog(
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit,
 ) {
-    var username by remember { mutableStateOf(currentUsername) }
-    var password by remember { mutableStateOf(currentPassword) }
+    var username by rememberSaveable { mutableStateOf(currentUsername) }
+    var password by rememberSaveable { mutableStateOf(currentPassword) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Proxy credentials") },
@@ -1183,7 +1394,8 @@ private fun SplitTunnelDialog(
 ) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf(current) }
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var appsLoaded by remember { mutableStateOf(false) }
 
     val installedApps by produceState<List<InstalledAppEntry>>(initialValue = emptyList()) {
         value = withContext(Dispatchers.IO) {
@@ -1198,6 +1410,7 @@ private fun SplitTunnelDialog(
                 .sortedBy { it.label.lowercase() }
                 .toList()
         }
+        appsLoaded = true
     }
     val filteredApps = remember(installedApps, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -1228,9 +1441,16 @@ private fun SplitTunnelDialog(
                         .fillMaxWidth()
                         .padding(bottom = 8.dp),
                 )
-                if (installedApps.isEmpty()) {
+                if (!appsLoaded) {
                     CircularProgressIndicator(
                         modifier = Modifier.padding(24.dp).align(Alignment.CenterHorizontally)
+                    )
+                } else if (installedApps.isEmpty()) {
+                    Text(
+                        "No launchable apps found",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp),
                     )
                 } else if (filteredApps.isEmpty()) {
                     Text(
@@ -1346,12 +1566,51 @@ private fun SettingsSection(
 }
 
 @Composable
+private fun ThemePickerDialog(
+    current: ThemeMode,
+    onDismiss: () -> Unit,
+    onConfirm: (ThemeMode) -> Unit,
+) {
+    var selected by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Theme") },
+        text = {
+            Column {
+                listOf(
+                    ThemeMode.SYSTEM to "Follow system",
+                    ThemeMode.LIGHT to "Light",
+                    ThemeMode.DARK to "Dark",
+                ).forEach { (mode, label) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = selected == mode, onClick = { selected = mode })
+                            .padding(vertical = 4.dp),
+                    ) {
+                        RadioButton(selected = selected == mode, onClick = { selected = mode })
+                        Text(label, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
 private fun MtuPickerDialog(
     current: Int,
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit,
 ) {
-    var mtuText by remember { mutableStateOf(current.toString()) }
+    var mtuText by rememberSaveable { mutableStateOf(current.toString()) }
     val parsedMtu = mtuText.toIntOrNull()
     val isValid = parsedMtu != null && parsedMtu in SettingsStore.MIN_MTU..SettingsStore.MAX_MTU
 
@@ -1372,6 +1631,11 @@ private fun MtuPickerDialog(
                     label = { Text("MTU (${SettingsStore.MIN_MTU}\u2013${SettingsStore.MAX_MTU})") },
                     singleLine = true,
                     isError = mtuText.isNotBlank() && !isValid,
+                    supportingText = {
+                        if (mtuText.isNotBlank() && !isValid) {
+                            Text("Enter an MTU between ${SettingsStore.MIN_MTU} and ${SettingsStore.MAX_MTU}")
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )

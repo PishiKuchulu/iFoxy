@@ -97,6 +97,7 @@ class AccountSwitcher(
     }
 
     fun notifyAccountAlert(title: String, text: String) {
+        if (!settingsStore.accountAlertsEnabled) return
         runCatching {
             val manager = appContext.getSystemService(NotificationManager::class.java) ?: return
             val openApp = PendingIntent.getActivity(

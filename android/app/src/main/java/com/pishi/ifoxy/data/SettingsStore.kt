@@ -28,6 +28,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_EXIT_CHECK, true)
         set(value) { prefs.edit().putBoolean(KEY_EXIT_CHECK, value).apply() }
 
+    var accountAlertsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ACCOUNT_ALERTS, true)
+        set(value) { prefs.edit().putBoolean(KEY_ACCOUNT_ALERTS, value).apply() }
+
     var mtu: Int
         get() = prefs.getInt(KEY_CUSTOM_MTU, DEFAULT_MTU)
         set(value) { prefs.edit().putInt(KEY_CUSTOM_MTU, value.coerceIn(MIN_MTU, MAX_MTU)).apply() }
@@ -295,6 +299,7 @@ class SettingsStore(context: Context) {
     companion object {
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_EXIT_CHECK = "exit_check_enabled"
+        private const val KEY_ACCOUNT_ALERTS = "account_alerts_enabled"
         private const val KEY_CUSTOM_MTU = "custom_mtu"
         private const val KEY_CACHED_REAL_IP = "cached_real_ip"
         private const val KEY_CACHED_REAL_COUNTRY = "cached_real_country"

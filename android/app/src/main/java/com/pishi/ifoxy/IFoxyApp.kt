@@ -41,6 +41,13 @@ class IFoxyApp : Application() {
         CrashReporter.install(this)
         CrashReporter.replayLastCrashIfAny(this)
 
+        // Shared log files from previous sessions are stale the moment
+        // a new session starts; drop them so cacheDir/logs cannot grow
+        // without bound (LogsScreen writes a fresh file per share).
+        runCatching {
+            java.io.File(cacheDir, "logs").listFiles()?.forEach { it.delete() }
+        }
+
         NettyLoggingBridge.install()
         installConscrypt()
         UpstreamTrust.init(this)
