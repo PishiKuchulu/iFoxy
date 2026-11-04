@@ -65,6 +65,18 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
+      - name: Upload R8 mapping
+        # Kept so on-device crash traces from this exact build can be
+        # deobfuscated later — without it, a shipped build's obfuscated
+        # frames are unreadable (learned from the 1.0.29 disconnect
+        # crash, whose mapping was discarded with the runner).
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: r8-mapping-${{ github.ref_name }}
+          path: android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Remove the decoded keystore
         if: always()
         run: rm -f release-keystore.jks
