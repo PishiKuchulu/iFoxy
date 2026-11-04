@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.30 (versionCode 67) - disconnect crash fix
+
+- Fixed a crash when disconnecting: the Home session timer
+  dereferenced the connection start time with `!!` inside its
+  one-second loop while disconnect nulls that value, so a tick
+  resuming in the cancellation window killed the app with an NPE
+  (reported on-device on 1.0.29). The timer now captures the start
+  time before the loop and never dereferences the live value.
+- Crash reports now record the app version and Android/device
+  context at the top of the crash file.
+- The release workflow now keeps the R8 mapping as a build
+  artifact, so crash traces from a shipped build can be
+  deobfuscated instead of being lost with the CI runner.
+
 ## 1.0.29 (versionCode 66) - updater honesty fix
 
 - The in-app updater no longer claims "You're up to date" when the
