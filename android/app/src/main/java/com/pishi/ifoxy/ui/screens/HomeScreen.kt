@@ -181,10 +181,16 @@ fun HomeScreen(
     }
 
     LaunchedEffect(state, connectedAtEpochMs) {
-        if (state == ConnectionState.CONNECTED && connectedAtEpochMs != null) {
+        // Capture the start time BEFORE the loop: disconnect nulls the
+        // flow synchronously, and a tick resuming while this effect is
+        // being cancelled must never dereference the live (by then
+        // null) value — that race crashed the app on disconnect in
+        // 1.0.29 (NPE in a Cancelling job on the main thread).
+        val startedAt = connectedAtEpochMs
+        if (state == ConnectionState.CONNECTED && startedAt != null) {
             while (isActive) {
                 val now = System.currentTimeMillis()
-                elapsedSeconds = ((now - connectedAtEpochMs!!) / 1000L).coerceAtLeast(0L)
+                elapsedSeconds = ((now - startedAt) / 1000L).coerceAtLeast(0L)
                 delay(1000L)
             }
         } else {
