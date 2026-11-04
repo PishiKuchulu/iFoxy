@@ -1,5 +1,17 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.30 combined release - Android disconnect crash fix
+
+Android-focused fix (desktop unchanged, still 0.2.3): disconnecting
+could crash the app — the Home session timer dereferenced the
+connection start time with `!!` inside its loop while disconnect
+nulls it. The timer now captures the start time up front. Crash
+reports record the app version, and the release workflow keeps
+the R8 mapping as an artifact so future crash traces can be read.
+
+Android 1.0.30 (versionCode 67): see android/CHANGELOG.md.
+Supersedes v1.0.29.
+
 ## v1.0.29 combined release - Android updater honesty fix
 
 Android-only fix (desktop unchanged, still 0.2.3): the in-app
