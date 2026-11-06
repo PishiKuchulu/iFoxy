@@ -22,6 +22,7 @@ import com.pishi.ifoxy.data.AccountStore
 import com.pishi.ifoxy.data.AccountSwitcher
 import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.ControlPlaneHttp
+import com.pishi.ifoxy.data.AccessTokenRenewal
 import com.pishi.ifoxy.data.FxaAuthRepository
 import com.pishi.ifoxy.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.pishi.ifoxy.data.GuardianClient
@@ -31,13 +32,14 @@ import com.pishi.ifoxy.data.QuotaExceededError
 import com.pishi.ifoxy.data.RECOMMENDED_COUNTRY_CODE
 import com.pishi.ifoxy.data.RotationResult
 import com.pishi.ifoxy.data.ServerListClient
+import com.pishi.ifoxy.data.SessionRenewalError
 import com.pishi.ifoxy.data.SettingsStore
 import com.pishi.ifoxy.data.TokenInvalidError
 import com.pishi.ifoxy.data.TokenStore
 import com.pishi.ifoxy.data.formatBytesPerSecond
+import com.pishi.ifoxy.data.isBotProtectionBlock
 import com.pishi.ifoxy.data.model.ConnectionState
 import com.pishi.ifoxy.data.model.ProxyCandidate
-import com.pishi.ifoxy.data.model.RuntimeAuth
 import com.pishi.ifoxy.vpn.socks.LocalHttpProxyServer
 import com.pishi.ifoxy.vpn.socks.LocalSocks5Server
 import com.pishi.ifoxy.vpn.tun.HevSocks5Tunnel
@@ -433,7 +435,7 @@ class IFoxyVpnService : VpnService() {
     }
 
     private fun isFatalUpstreamError(error: Throwable): Boolean =
-        error is TokenInvalidError || error is QuotaExceededError
+        error is TokenInvalidError || error is QuotaExceededError || error is SessionRenewalError
 
     private fun startProxyPassRenewal(
         myGeneration: Int,
@@ -680,17 +682,27 @@ class IFoxyVpnService : VpnService() {
                 var auth = tokenStore.loadAuth() ?: throw TokenInvalidError("Not signed in")
 
                 if (!tokenStore.hasValidAccessToken()) {
-                    val renewed = renewAccessToken(tokenStore)
-                    if (renewed != null) {
-                        auth = renewed
-                        AppLogger.i(TAG, "the account's access token had expired and was renewed")
-                    } else {
-
-                        AppLogger.w(
-                            TAG,
-                            "the account's access token is past its expiry and could not be renewed automatically; " +
-                                "you may need to sign in again",
-                        )
+                    when (val renewal = renewAccessToken(tokenStore)) {
+                        is AccessTokenRenewal.Renewed -> {
+                            auth = renewal.auth
+                            AppLogger.i(TAG, "the account's access token had expired and was renewed")
+                        }
+                        is AccessTokenRenewal.Failed -> {
+                            // A blocked or permanently rejected renewal
+                            // cannot succeed by carrying on with the dead
+                            // token: Guardian would only 401, on every
+                            // server, for the full retry budget (the
+                            // 2026-11-06 on-device log). Fail fast with
+                            // the way out instead.
+                            if (renewal.blockedByBotProtection || renewal.permanent) {
+                                throw sessionRenewalError(renewal)
+                            }
+                            AppLogger.w(
+                                TAG,
+                                "the account's access token is past its expiry and could not be renewed automatically; " +
+                                    "you may need to sign in again",
+                            )
+                        }
                     }
                 }
                 val guardian = GuardianClient()
@@ -705,21 +717,30 @@ class IFoxyVpnService : VpnService() {
                     // second 401 (the pattern behind the "failed to
                     // activate guardian entitlement: HTTP 401" reports).
                     AppLogger.w(TAG, "Guardian rejected the access token; renewing it and retrying", rejected)
-                    val renewed = renewAccessToken(tokenStore)
-                    if (renewed != null) {
-                        auth = renewed
-                        AppLogger.i(TAG, "the account's access token was renewed after the rejection")
-                        try {
-                            guardian.fetchProxyPass(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
-                        } catch (stillRejected: TokenInvalidError) {
-                            AppLogger.w(TAG, "still rejected; activating the Guardian entitlement and retrying", stillRejected)
+                    when (val renewal = renewAccessToken(tokenStore)) {
+                        is AccessTokenRenewal.Renewed -> {
+                            auth = renewal.auth
+                            AppLogger.i(TAG, "the account's access token was renewed after the rejection")
+                            try {
+                                guardian.fetchProxyPass(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
+                            } catch (stillRejected: TokenInvalidError) {
+                                AppLogger.w(TAG, "still rejected; activating the Guardian entitlement and retrying", stillRejected)
+                                guardian.activateGuardian(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
+                                guardian.fetchProxyPass(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
+                            }
+                        }
+                        is AccessTokenRenewal.Failed -> {
+                            // Same fail-fast as the expired-token path:
+                            // activating the entitlement with a token
+                            // whose renewal is blocked or permanently
+                            // rejected only earns another 401.
+                            if (renewal.blockedByBotProtection || renewal.permanent) {
+                                throw sessionRenewalError(renewal)
+                            }
+                            AppLogger.w(TAG, "token renewal failed; activating the Guardian entitlement and retrying")
                             guardian.activateGuardian(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
                             guardian.fetchProxyPass(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
                         }
-                    } else {
-                        AppLogger.w(TAG, "token renewal failed; activating the Guardian entitlement and retrying")
-                        guardian.activateGuardian(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
-                        guardian.fetchProxyPass(GUARDIAN_ENDPOINT_DEFAULT, auth.accessToken)
                     }
                 }
                 if (pass.quotaRemaining != null) {
@@ -1094,20 +1115,41 @@ class IFoxyVpnService : VpnService() {
         return EdgeAddressResolver.resolve(host, dohEndpointAddresses)
     }
 
-    private suspend fun renewAccessToken(tokenStore: TokenStore): RuntimeAuth? {
-        val attempt = runCatching { FxaAuthRepository(tokenStore).refreshAccessToken() }
+    private suspend fun renewAccessToken(tokenStore: TokenStore): AccessTokenRenewal {
+        val attempt = runCatching { FxaAuthRepository(tokenStore).renewAccessTokenDetailed() }
         val failure = attempt.exceptionOrNull()
         if (failure is CancellationException) throw failure
         if (failure != null) {
             AppLogger.w(TAG, "renewing the account's access token failed", failure)
-            return null
+            return AccessTokenRenewal.Failed(
+                message = failure.message,
+                permanent = false,
+                blockedByBotProtection = failure.isBotProtectionBlock(),
+            )
         }
-        return attempt.getOrNull()
+        return attempt.getOrThrow()
     }
+
+    /** The fatal, user-facing form of a renewal failure that retrying
+     *  cannot fix; the message names the way out for each cause. */
+    private fun sessionRenewalError(failure: AccessTokenRenewal.Failed): SessionRenewalError =
+        if (failure.blockedByBotProtection) {
+            SessionRenewalError(
+                "Your session could not be renewed: Mozilla's bot protection blocked the " +
+                    "renewal on this network. Switch networks (Wi-Fi <-> mobile data) and " +
+                    "try again, or sign out and sign in again.",
+            )
+        } else {
+            SessionRenewalError(
+                "Your Mozilla session has expired and could not be renewed. " +
+                    "Please sign out and sign in again.",
+            )
+        }
 
     private fun friendlyErrorMessage(error: Throwable): String = when (error) {
         is QuotaExceededError -> "Your VPN quota is exhausted. Try again later."
         is TokenInvalidError -> "Your session was rejected. Please sign in again."
+        is SessionRenewalError -> error.message ?: "Your session could not be renewed. Please sign in again."
         is TimeoutCancellationException -> "the connection timed out"
         else -> {
             val untrusted = generateSequence(error) { it.cause }.take(8).any {

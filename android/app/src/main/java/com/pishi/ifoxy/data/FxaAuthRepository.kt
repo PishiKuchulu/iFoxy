@@ -39,7 +39,29 @@ class FxaRefreshFailure(
     message: String,
     val permanent: Boolean,
     cause: Throwable? = null,
+    /** True when Mozilla's bot protection (HTTP 406) blocked the
+     *  renewal before FxA could evaluate the refresh token: the
+     *  session itself may still be valid, and retrying the same
+     *  native request on this network cannot succeed. */
+    val blockedByBotProtection: Boolean = false,
 ) : Exception(message, cause)
+
+/** True when this failure chain contains a Fastly bot-protection
+ *  block (HTTP 406 whose challenge could not be solved natively). */
+internal fun Throwable.isBotProtectionBlock(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is FastlyBlockedException }
+
+/** The outcome of a forced access-token renewal, keeping WHY it
+ *  failed: callers must not treat a blocked or permanently rejected
+ *  renewal like a transient error and carry on with a dead token. */
+sealed interface AccessTokenRenewal {
+    data class Renewed(val auth: RuntimeAuth) : AccessTokenRenewal
+    data class Failed(
+        val message: String?,
+        val permanent: Boolean,
+        val blockedByBotProtection: Boolean,
+    ) : AccessTokenRenewal
+}
 
 /** Mozilla's bot protection (HTTP 406) could not be cleared automatically
  *  on this network; the message is user-facing and actionable. */
@@ -168,6 +190,7 @@ class FxaAuthRepository(
                 transport.message ?: "Could not reach the Firefox Accounts server",
                 permanent = false,
                 cause = transport,
+                blockedByBotProtection = transport.isBotProtectionBlock(),
             )
         }
 
@@ -202,6 +225,24 @@ class FxaAuthRepository(
     } catch (failure: FxaRefreshFailure) {
         AppLogger.w(TAG, "access token renewal failed", failure)
         null
+    }
+
+    /** Forced renewal that reports WHY it failed instead of collapsing
+     *  every failure to null: a renewal blocked by Mozilla's bot
+     *  protection, or one FxA permanently rejected, will never succeed
+     *  by retrying with the same dead token, and the connect flow
+     *  fails fast on those instead of burning server attempts. */
+    suspend fun renewAccessTokenDetailed(): AccessTokenRenewal = try {
+        AccessTokenRenewal.Renewed(ensureFreshAccessToken(force = true))
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (failure: FxaRefreshFailure) {
+        AppLogger.w(TAG, "access token renewal failed", failure)
+        AccessTokenRenewal.Failed(
+            message = failure.message,
+            permanent = failure.permanent,
+            blockedByBotProtection = failure.blockedByBotProtection,
+        )
     }
 
     private fun FxaApiError.isPermanentRefreshRejection(): Boolean {
