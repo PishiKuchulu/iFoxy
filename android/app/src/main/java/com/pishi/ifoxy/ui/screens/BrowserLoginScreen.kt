@@ -340,12 +340,40 @@ private fun isSuccessUrl(url: String?): Boolean {
  *  the native client's HTTP 406. Returns the parsed token response on
  *  HTTP 200, or null on any failure (the caller falls back to the
  *  native exchange). */
+internal class InPageExchangeOutcome(
+    val tokenJson: JSONObject?,
+    /** HTTP status of the exchange fetch; -1 when it never answered. */
+    val status: Int,
+    /** The response looks like a bot-protection block rather than an
+     *  FxA answer (see [isBlockedLikeExchange]). */
+    val blockedLike: Boolean,
+)
+
+/** Whether an in-page exchange response is Mozilla's bot protection
+ *  rather than FxA itself answering: HTTP 406, or an HTTP 200 whose
+ *  body is not the token JSON (a challenge interstitial page served
+ *  to the fetch in place of the API answer). */
+internal fun isBlockedLikeExchange(status: Int, hasTokenJson: Boolean): Boolean =
+    status == 406 || (status == 200 && !hasTokenJson)
+
+/** The scheme://host[:port]/ origin of a URL, or null when it does
+ *  not parse into one. Used to open the FxA API host itself in the
+ *  browser so its own pages can clear the bot-protection challenge. */
+internal fun apiOriginOf(url: String): String? {
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+    val scheme = uri.scheme ?: return null
+    val host = uri.host ?: return null
+    return if (uri.port > 0) "$scheme://$host:${uri.port}/" else "$scheme://$host/"
+}
+
 internal suspend fun runTokenExchangeInPage(
     webView: WebView,
     bridge: WebChannelBridge,
     spec: BrowserTokenRequest,
-): JSONObject? {
-    val payload = withTimeoutOrNull(25_000) {
+    credentialsMode: String = "omit",
+    timeoutMs: Long = 25_000,
+): InPageExchangeOutcome {
+    val payload = withTimeoutOrNull(timeoutMs) {
         suspendCancellableCoroutine<String> { cont ->
             bridge.tokenExchangeCallback = { result ->
                 if (cont.isActive) cont.resume(result)
@@ -355,25 +383,104 @@ internal suspend fun runTokenExchangeInPage(
                 ",{method:'POST',headers:{'Content-Type':'application/json','Authorization':" +
                 JSONObject.quote(spec.authorization) +
                 "},body:" + JSONObject.quote(spec.bodyJson) +
-                ",credentials:'omit'}).then(function(r){return r.text().then(function(t){" +
+                ",credentials:" + JSONObject.quote(credentialsMode) + "}).then(function(r){return r.text().then(function(t){" +
                 "window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:r.status,body:t}));});})" +
                 ".catch(function(e){window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:0,body:String(e)}));});" +
                 "}catch(e){window.foxyWebChannel.onTokenExchangeResult(JSON.stringify({status:-1,body:String(e)}));}})();"
             webView.post { webView.evaluateJavascript(script, null) }
         }
-    } ?: return null
-    val outer = runCatching { JSONObject(payload) }.getOrNull() ?: return null
+    } ?: return InPageExchangeOutcome(null, -1, blockedLike = false)
+    val outer = runCatching { JSONObject(payload) }.getOrNull()
+        ?: return InPageExchangeOutcome(null, -1, blockedLike = false)
     val status = outer.optInt("status")
     if (status != 200) {
         AppLogger.w(
             "BrowserLoginScreen",
             "in-page token exchange failed: status=$status body=${outer.optString("body").take(200)}",
         )
-        return null
+        return InPageExchangeOutcome(null, status, isBlockedLikeExchange(status, hasTokenJson = false))
     }
-    AppLogger.i("BrowserLoginScreen", "in-page token exchange succeeded (HTTP 200)")
-    return runCatching { JSONObject(outer.optString("body")) }.getOrNull()
+    val tokenJson = runCatching { JSONObject(outer.optString("body")) }.getOrNull()
         ?.takeIf { it.optString("access_token").isNotBlank() }
+    if (tokenJson != null) {
+        AppLogger.i("BrowserLoginScreen", "in-page token exchange succeeded (HTTP 200)")
+    }
+    return InPageExchangeOutcome(tokenJson, status, isBlockedLikeExchange(status, tokenJson != null))
+}
+
+private const val CHALLENGE_CLEARANCE_DEADLINE_MS = 75_000L
+private const val CHALLENGE_CLEARANCE_POLL_MS = 5_000L
+
+/** The in-page exchange with bot-protection recovery. On 2026-11-06
+ *  the plain in-page fetch itself started returning HTTP 406 on a
+ *  flagged network: the fetch sends no cookies and cannot execute
+ *  Fastly's JavaScript challenge, so the trust the sign-in page
+ *  earned does not carry to the API host. Recovery, in order:
+ *  1. Retry the fetch WITH the browser's cookies (a domain-scoped
+ *     clearance cookie from the sign-in pages may already exist).
+ *  2. Open the API host itself in the WebView: a top-level browser
+ *     navigation CAN run the challenge script, and the clearance
+ *     cookie it earns is stored in the browser's own cookie jar.
+ *     Then poll the exchange from that same-origin context (cookies
+ *     included) until it answers or the deadline passes.
+ *  Returns the token response, or null when every route is blocked
+ *  (the caller then falls back to the native exchange, whose own
+ *  failure message tells the user to switch networks). */
+internal suspend fun runTokenExchangeWithClearance(
+    webView: WebView,
+    bridge: WebChannelBridge,
+    spec: BrowserTokenRequest,
+): JSONObject? {
+    val first = runTokenExchangeInPage(webView, bridge, spec)
+    if (first.tokenJson != null) return first.tokenJson
+    if (!first.blockedLike) return null
+
+    AppLogger.w(
+        "BrowserLoginScreen",
+        "in-page token exchange blocked (status=${first.status}); retrying with the browser's cookies",
+    )
+    val withCookies = runTokenExchangeInPage(
+        webView,
+        bridge,
+        spec,
+        credentialsMode = "include",
+        timeoutMs = 15_000,
+    )
+    if (withCookies.tokenJson != null) return withCookies.tokenJson
+    if (!withCookies.blockedLike) return null
+
+    val apiOrigin = apiOriginOf(spec.url) ?: return null
+    AppLogger.i(
+        "BrowserLoginScreen",
+        "opening $apiOrigin in the browser so it can clear the bot-protection challenge itself",
+    )
+    webView.post { webView.loadUrl(apiOrigin) }
+
+    val deadline = System.currentTimeMillis() + CHALLENGE_CLEARANCE_DEADLINE_MS
+    while (System.currentTimeMillis() < deadline) {
+        delay(CHALLENGE_CLEARANCE_POLL_MS)
+        val attempt = runTokenExchangeInPage(
+            webView,
+            bridge,
+            spec,
+            credentialsMode = "include",
+            timeoutMs = 12_000,
+        )
+        if (attempt.tokenJson != null) return attempt.tokenJson
+        if (!attempt.blockedLike && attempt.status > 0) {
+            // FxA itself answered (a rejection the native path will
+            // report faithfully); more waiting cannot change it.
+            AppLogger.w(
+                "BrowserLoginScreen",
+                "challenge clearance ended with an FxA answer: status=${attempt.status}",
+            )
+            return null
+        }
+        // status -1 (page still navigating / challenge running) or a
+        // block-like response: keep waiting for the clearance cookie.
+    }
+    AppLogger.w("BrowserLoginScreen", "challenge clearance did not unblock the token exchange")
+    return null
 }
 
 @Composable
@@ -717,8 +824,10 @@ internal fun BrowserLoginScreen(
                                 super.onReceivedError(view, request, error)
                                 // Subresource failures are routine (trackers,
                                 // fonts); only a main-frame failure strands
-                                // the user on a dead page.
-                                if (request?.isForMainFrame == true) {
+                                // the user on a dead page. While a token
+                                // exchange is running, its own API-host
+                                // navigation must not raise this either.
+                                if (request?.isForMainFrame == true && !exchanging) {
                                     loadError = error?.description?.toString()
                                         ?.takeIf { it.isNotBlank() }
                                         ?: "Couldn't load the sign-in page. " +
@@ -732,7 +841,7 @@ internal fun BrowserLoginScreen(
                                 errorResponse: WebResourceResponse?,
                             ) {
                                 super.onReceivedHttpError(view, request, errorResponse)
-                                if (request?.isForMainFrame == true) {
+                                if (request?.isForMainFrame == true && !exchanging) {
                                     val status = errorResponse?.statusCode
                                     loadError = if (status != null) {
                                         "The sign-in page could not be loaded (HTTP $status). " +
