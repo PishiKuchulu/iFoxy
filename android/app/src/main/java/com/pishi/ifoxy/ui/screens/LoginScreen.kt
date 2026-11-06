@@ -124,7 +124,7 @@ fun LoginScreen(
             },
             onOpenLogs = onOpenLogs,
             exchangeToken = { token, webView, bridge ->
-                runTokenExchangeInPage(
+                runTokenExchangeWithClearance(
                     webView,
                     bridge,
                     authRepository.buildBrowserTokenRequest(token),
