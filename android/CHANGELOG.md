@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.32 (versionCode 69) - browser clears the challenge for sign-in
+
+- Fixed sign-in failing on flagged networks even through the
+  browser flow (on-device, 2026-11-06): the sign-in pages loaded
+  and the session was captured, but the in-page token exchange
+  itself returned HTTP 406 — the exchange fetch sends no cookies
+  and cannot execute Fastly's JavaScript challenge, so the trust
+  the page earned did not carry to the API host, and the native
+  fallback hit the same dead end as before.
+- The in-page exchange now recovers from a block: it retries with
+  the browser's cookies, then opens the API host itself in the
+  WebView so the real browser solves the JavaScript challenge
+  and stores the clearance cookie, and polls the exchange from
+  that context until it answers (bounded at ~75 seconds).
+  Regression tests cover the block classification and the
+  API-origin derivation the recovery keys off.
+
 ## 1.0.31 (versionCode 68) - blocked session renewal fails fast
 
 - Fixed the doomed-retry connect failure seen on-device on
