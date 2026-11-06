@@ -1,5 +1,18 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.32 combined release - Android sign-in challenge clearance
+
+Android-focused fix (desktop unchanged, still 0.2.3): on flagged
+networks the browser sign-in's in-page token exchange itself
+started returning HTTP 406, because the exchange fetch carries
+no cookies and cannot run Fastly's JavaScript challenge. The
+exchange now retries with the browser's cookies and then lets
+the WebView open the API host and clear the challenge like a
+real browser before polling the exchange again.
+
+Android 1.0.32 (versionCode 69): see android/CHANGELOG.md.
+Supersedes v1.0.31.
+
 ## v1.0.31 combined release - Android blocked-renewal fix
 
 Android-focused fix (desktop unchanged, still 0.2.3): when the
