@@ -1,5 +1,18 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.31 combined release - Android blocked-renewal fix
+
+Android-focused fix (desktop unchanged, still 0.2.3): when the
+access token had expired and Mozilla's bot protection blocked
+its renewal (HTTP 406), connecting burned the full retry budget
+with a dead token and ended in a misleading "could not reach a
+VPN server" error. A blocked or permanently rejected renewal
+now fails the connect immediately with a message naming the
+way out (switch networks, or sign out and sign in again).
+
+Android 1.0.31 (versionCode 68): see android/CHANGELOG.md.
+Supersedes v1.0.30.
+
 ## v1.0.30 combined release - Android disconnect crash fix
 
 Android-focused fix (desktop unchanged, still 0.2.3): disconnecting
