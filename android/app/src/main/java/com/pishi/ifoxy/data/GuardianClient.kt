@@ -19,6 +19,12 @@ class GuardianHttpError(message: String, val statusCode: Int? = null) : Exceptio
 class QuotaExceededError(message: String) : Exception(message)
 class TokenInvalidError(message: String) : Exception(message)
 
+/** The stored session could not be renewed and retrying cannot fix
+ *  it (Mozilla's bot protection blocked the renewal, or FxA
+ *  permanently rejected the refresh token). Fatal for a connect
+ *  attempt: its message is user-facing and names the way out. */
+class SessionRenewalError(message: String) : Exception(message)
+
 data class ProxyPass(
     val token: String,
     val expiresAtEpochSeconds: Long?,
