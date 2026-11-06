@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.31 (versionCode 68) - blocked session renewal fails fast
+
+- Fixed the doomed-retry connect failure seen on-device on
+  2026-11-06: when the access token had expired, the renewal
+  request was blocked by Mozilla's bot protection (HTTP 406, the
+  native challenge solver cannot clear it on a flagged network),
+  yet the connect flow carried on with the dead token — Guardian
+  rejected it (401), entitlement activation with the same token
+  rejected it again, and the cycle repeated for four attempts
+  across every candidate server before failing with a misleading
+  "could not reach a VPN server" message.
+- Renewal failures are now classified: a bot-protection block or
+  a permanent FxA rejection is fatal for the connect attempt,
+  which stops immediately with a message that names the way out
+  (switch networks, or sign out and sign in again — the browser
+  sign-in route is not subject to the native 406 block). Only
+  genuinely transient renewal failures keep the old fallback.
+  Regression tests cover the classification.
+
 ## 1.0.30 (versionCode 67) - disconnect crash fix
 
 - Fixed a crash when disconnecting: the Home session timer
