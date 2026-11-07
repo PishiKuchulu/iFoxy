@@ -138,6 +138,7 @@ fun HomeScreen(
 
     val connected = state == ConnectionState.CONNECTED
     val connecting = state == ConnectionState.CONNECTING
+    val reconnecting = state == ConnectionState.RECONNECTING
 
     // The palette follows the user's theme (header toggle), NOT the
     // connection state: the light theme is the brand-yellow screen and the
@@ -450,6 +451,15 @@ fun HomeScreen(
                                     ),
                                     color = muted,
                                 )
+                                reconnecting -> Text(
+                                    "Reconnecting\u2026",
+                                    style = TextStyle(
+                                        fontFamily = PoppinsFamily,
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 12.sp,
+                                    ),
+                                    color = muted,
+                                )
                                 else -> Text(
                                     if (selectedProxy != null) "Last used" else "Choose a location",
                                     style = TextStyle(
@@ -526,7 +536,7 @@ fun HomeScreen(
                                 ),
                         )
                     }
-                    if (connecting) {
+                    if (connecting || reconnecting) {
                         CircularProgressIndicator(
                             color = IFoxyYellow,
                             strokeWidth = 3.dp,
@@ -616,6 +626,15 @@ fun HomeScreen(
                             ),
                             color = muted,
                         )
+                        reconnecting -> Text(
+                            "Reconnecting\u2026",
+                            style = TextStyle(
+                                fontFamily = PoppinsFamily,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 13.5.sp,
+                            ),
+                            color = muted,
+                        )
                         else -> Text(
                             "Not connected",
                             style = TextStyle(
@@ -651,7 +670,7 @@ fun HomeScreen(
                 // connection as seen before the tunnel (fetched above
                 // only when the toggle is on; seeded from the cache).
                 val realIpInfo = realIp
-                if (!connected && !connecting && app.settingsStore.exitCheckEnabled && realIpInfo != null) {
+                if (!connected && !connecting && !reconnecting && app.settingsStore.exitCheckEnabled && realIpInfo != null) {
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "Your connection: ${realIpInfo.ip} \u00B7 ${realIpInfo.countryCode}",
