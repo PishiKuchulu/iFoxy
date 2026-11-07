@@ -45,7 +45,7 @@ class QuickConnectTileService : TileService() {
     override fun onClick() {
         super.onClick()
         when (IFoxyVpnService.state.value) {
-            ConnectionState.CONNECTED, ConnectionState.CONNECTING -> {
+            ConnectionState.CONNECTED, ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> {
                 IFoxyVpnService.stop(this)
             }
             ConnectionState.DISCONNECTED -> {
@@ -87,6 +87,12 @@ class QuickConnectTileService : TileService() {
                 tile.state = Tile.STATE_ACTIVE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     tile.subtitle = getString(R.string.quick_connect_connecting)
+                }
+            }
+            ConnectionState.RECONNECTING -> {
+                tile.state = Tile.STATE_ACTIVE
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    tile.subtitle = getString(R.string.quick_connect_reconnecting)
                 }
             }
             ConnectionState.DISCONNECTED -> {
