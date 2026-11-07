@@ -377,12 +377,28 @@ impl SecretStore {
             use std::io::Write as _;
             use std::os::unix::fs::OpenOptionsExt;
             let tmp_path = self.storage_path.with_extension("tmp");
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
+            // create_new, like the key file above: create+truncate
+            // follows a symlink planted at this predictable path in
+            // the user's config dir (audit hardening, v1.0.33). A tmp
+            // left behind by a crash mid-save was never renamed into
+            // place, so clearing it and retrying once is safe — the
+            // retry still goes through create_new, which refuses to
+            // write through a symlink.
+            let open_tmp = |path: &std::path::PathBuf| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)
+            };
+            let mut f = match open_tmp(&tmp_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    open_tmp(&tmp_path)?
+                }
+                Err(e) => return Err(e.into()),
+            };
             f.write_all(&encrypted)?;
             f.sync_all()?;
             drop(f);

@@ -100,6 +100,27 @@ const PROXY_KEYS: &[(&str, &str)] = &[
     ("org.gnome.system.proxy.socks", "port"),
 ];
 
+/// Resolve the account NAME for a uid from /etc/passwd (std-only).
+/// `runuser -u` expects an account name: handing it the numeric
+/// PKEXEC_UID made every gsettings call fail on the pkexec-elevated
+/// path, so GNOME proxy backup/restore silently did nothing (audit
+/// fix, v1.0.33).
+#[cfg(target_os = "linux")]
+fn account_name_for_uid(uid: u32) -> Option<String> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _passwd_field = fields.next()?;
+        let entry_uid: u32 = fields.next()?.parse().ok()?;
+        if entry_uid == uid {
+            Some(name.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Run `gsettings` as the desktop user (see the module docs): when the
 /// process is root via pkexec/sudo, wrap with runuser and the user's
 /// session-bus environment; otherwise run directly.
@@ -112,10 +133,20 @@ fn gsettings(args: &[&str]) -> Result<String, String> {
     let am_root = unsafe { libc::geteuid() } == 0;
 
     let out = if let (true, Some(uid)) = (am_root, desktop_uid) {
+        // runuser wants the account NAME, not the numeric uid — fail
+        // loudly when the uid cannot be resolved instead of passing a
+        // number that runuser looks up as a (nonexistent) username.
+        let user_name = account_name_for_uid(uid).ok_or_else(|| {
+            format!(
+                "cannot resolve an account name for PKEXEC_UID {} in /etc/passwd; \
+                 refusing to invoke runuser with a numeric uid",
+                uid
+            )
+        })?;
         let runtime_dir = format!("/run/user/{}", uid);
         let bus = format!("unix:path={}/bus", runtime_dir);
         let mut cmd = std::process::Command::new(crate::syscmd::tool_path("runuser"));
-        cmd.args(["-u", &uid.to_string(), "--", "env"])
+        cmd.args(["-u", &user_name, "--", "env"])
             .arg(format!("XDG_RUNTIME_DIR={}", runtime_dir))
             .arg(format!("DBUS_SESSION_BUS_ADDRESS={}", bus))
             .arg(crate::syscmd::tool_path("gsettings"))

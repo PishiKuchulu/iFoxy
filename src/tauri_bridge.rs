@@ -489,7 +489,10 @@ impl AppState {
                 let status = match vpn_state {
                     ConnectionState::Connected { target, mode } => json!({
                         "state": "connected",
-                        "mode": format!("{:?}", mode).to_lowercase(),
+                        "mode": match mode {
+                            ConnectionMode::Full => "full",
+                            ConnectionMode::ProxyOnly => "proxy_only",
+                        },
                         "current_country": target.country_name,
                         "current_city": target.city_name.unwrap_or(target.city_code),
                         "bytes_sent": bytes_sent,

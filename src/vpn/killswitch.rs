@@ -627,7 +627,17 @@ impl KillSwitchGuard {
 
     pub fn clean(&mut self) {
         if self.active.load(Ordering::SeqCst) {
-            let _ = self.backend.remove_kill_switch(&self.active_filters);
+            // Log a failed removal instead of discarding it silently
+            // (audit fix, v1.0.33): the guard forgets these filters
+            // either way, so this log is the only trace that
+            // protection may still be installed.
+            if let Err(e) = self.backend.remove_kill_switch(&self.active_filters) {
+                tracing::warn!(
+                    "Kill-switch cleanup: failed to remove {} recorded filter(s): {}",
+                    self.active_filters.len(),
+                    e
+                );
+            }
             self.active.store(false, Ordering::SeqCst);
 
             if let Some(ref j) = self.journal {

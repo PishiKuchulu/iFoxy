@@ -1,6 +1,6 @@
 package com.pishi.ifoxy.data.model
 
-enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
+enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
 
 data class VpnProtocol(
     val name: String,

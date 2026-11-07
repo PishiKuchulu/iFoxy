@@ -988,3 +988,125 @@ async fn test_netstack_5000_short_server_closed_flows_zero_residual() {
         residual
     );
 }
+
+#[tokio::test]
+async fn test_netstack_out_of_order_fin_waits_for_missing_segment() {
+    let (h2_addr, _h2_handle) = start_mock_h2_echo_server().await;
+    let session = setup_h2_session(h2_addr).await;
+
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(1024);
+    let adapter_ip = Ipv4Addr::new(10, 64, 0, 2);
+    let netstack = Arc::new(VirtualNetstack::new(adapter_ip, session, outbound_tx));
+
+    let client_ip = Ipv4Addr::new(10, 64, 0, 2);
+    let server_ip = Ipv4Addr::new(1, 1, 1, 1);
+    let client_port = 54331;
+    let server_port = 443;
+    let client_isn = 4000u32;
+
+    let (client_seq, server_seq) = perform_handshake(
+        &netstack,
+        &mut outbound_rx,
+        client_ip,
+        server_ip,
+        client_port,
+        server_port,
+        client_isn,
+    )
+    .await;
+
+    // Segment 2 ("WORLD") arrives first and is parked in the
+    // reassembly queue.
+    let seg2_pkt = build_tcp_packet(
+        client_ip,
+        server_ip,
+        client_port,
+        server_port,
+        client_seq + 5,
+        server_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        65535,
+        b"WORLD",
+    );
+    netstack.handle_packet(&seg2_pkt).await;
+
+    // The FIN for the position right after "WORLD" arrives while
+    // "HELLO" is still missing. It must be parked, not applied: the
+    // old code shut the upstream write side down immediately and the
+    // missing bytes could never be delivered.
+    let fin_pkt = build_tcp_packet(
+        client_ip,
+        server_ip,
+        client_port,
+        server_port,
+        client_seq + 10,
+        server_seq,
+        TCP_FLAG_FIN | TCP_FLAG_ACK,
+        65535,
+        &[],
+    );
+    netstack.handle_packet(&fin_pkt).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    while let Ok(pkt_raw) = outbound_rx.try_recv() {
+        let (_, ip_payload) = Ipv4Header::parse(&pkt_raw).unwrap();
+        let (tcp_hdr, _) = TcpHeader::parse(ip_payload).unwrap();
+        assert_eq!(
+            tcp_hdr.flags & TCP_FLAG_FIN,
+            0,
+            "an early FIN must not close the flow before the missing data arrives"
+        );
+        assert_ne!(
+            tcp_hdr.ack,
+            client_seq + 11,
+            "the parked FIN must not be ACKed as consumed"
+        );
+    }
+
+    // Segment 1 ("HELLO") fills the gap: both segments are delivered
+    // in order, and only then is the FIN applied — the echo server
+    // ends the stream and the netstack answers with its own FIN.
+    let seg1_pkt = build_tcp_packet(
+        client_ip,
+        server_ip,
+        client_port,
+        server_port,
+        client_seq,
+        server_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        65535,
+        b"HELLO",
+    );
+    netstack.handle_packet(&seg1_pkt).await;
+
+    let mut echoed_bytes = Vec::new();
+    let mut saw_fin = false;
+    let timeout = tokio::time::sleep(Duration::from_secs(2));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            Some(pkt_raw) = outbound_rx.recv() => {
+                let (_, ip_payload) = Ipv4Header::parse(&pkt_raw).unwrap();
+                let (tcp_hdr, payload) = TcpHeader::parse(ip_payload).unwrap();
+                if !payload.is_empty() {
+                    echoed_bytes.extend_from_slice(payload);
+                }
+                if (tcp_hdr.flags & TCP_FLAG_FIN) != 0 {
+                    saw_fin = true;
+                }
+                if echoed_bytes.len() >= 10 && saw_fin {
+                    break;
+                }
+            }
+            _ = &mut timeout => break,
+        }
+    }
+
+    assert_eq!(
+        echoed_bytes, b"HELLOWORLD",
+        "data parked ahead of the FIN must still be delivered, in order"
+    );
+    assert!(
+        saw_fin,
+        "the parked FIN must be applied once the gap is filled"
+    );
+}

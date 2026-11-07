@@ -35,6 +35,28 @@ fun Throwable.isUnconfirmedSession(): Boolean =
     (this as? FxaApiError)?.isUnconfirmedSession == true ||
         message?.contains("Unconfirmed session", ignoreCase = true) == true
 
+/** FxA errno 110: "Invalid authentication token" — FxA's own verdict
+ *  that a token is dead, as opposed to a bare HTTP status that an
+ *  intermediary (WAF, rate limiter) could have produced. */
+private const val FXA_ERRNO_INVALID_TOKEN = 110
+
+/**
+ * Whether FxA's rejection of the REFRESH grant proves the stored
+ * refresh token is dead. Permanent requires definitive evidence:
+ * HTTP 401, or an error body carrying errno 110 — at any status.
+ *
+ * The old rule (any 400/401/403 is permanent) erased the stored
+ * session on transient 400/403 responses that say nothing about the
+ * token — a WAF or rate-limit 403 on a flaky network signed the user
+ * out (audit fix, v1.0.33). A 400/403 WITHOUT the errno is transient:
+ * the stored auth must survive it. Bot-protection blocks never reach
+ * this classifier as FxaApiError (a 406 becomes FastlyBlockedException
+ * in fxaDo), so the v1.0.31 blocked-renewal classification is
+ * unaffected.
+ */
+internal fun FxaApiError.isPermanentRefreshRejection(): Boolean =
+    statusCode == 401 || errno == FXA_ERRNO_INVALID_TOKEN
+
 class FxaRefreshFailure(
     message: String,
     val permanent: Boolean,
@@ -243,10 +265,6 @@ class FxaAuthRepository(
             permanent = failure.permanent,
             blockedByBotProtection = failure.blockedByBotProtection,
         )
-    }
-
-    private fun FxaApiError.isPermanentRefreshRejection(): Boolean {
-        return statusCode == 400 || statusCode == 401 || statusCode == 403
     }
 
     private fun expiryFrom(tokenData: JSONObject): Long {

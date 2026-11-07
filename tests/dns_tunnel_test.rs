@@ -170,3 +170,65 @@ fn test_real_windows_interface_dns_settings_readback() {
         "Original DNS configuration must be fully restored"
     );
 }
+
+/// Build a query/response pair for "test." whose single answer RR
+/// carries the given TTL. The answer TTL sits at bytes 28..32 of the
+/// response (12 header + 6 question name + 4 question type/class +
+/// 2 answer name pointer + 2 type + 2 class).
+fn dns_query_response(ttl: u32) -> (Vec<u8>, Vec<u8>) {
+    let query = vec![
+        0x55, 0xAA, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, b't', b'e',
+        b's', b't', 0x00, 0x00, 0x01, 0x00, 0x01,
+    ];
+    let mut response = vec![
+        0x55, 0xAA, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x04, b't', b'e',
+        b's', b't', 0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01,
+    ];
+    response.extend_from_slice(&ttl.to_be_bytes());
+    response.extend_from_slice(&[0x00, 0x04, 1, 1, 1, 1]);
+    (query, response)
+}
+
+#[test]
+fn test_dns_cache_does_not_cache_zero_ttl_answers() {
+    let mut cache = DnsCache::new(Duration::from_secs(60));
+    let (query, response) = dns_query_response(0);
+    cache.insert(&query, response);
+    assert!(
+        cache.lookup(&query).is_none(),
+        "a TTL-0 answer must not be cached (RFC 2181 §8); the old 5 s clamp floor cached it anyway"
+    );
+}
+
+#[test]
+fn test_dns_cache_honors_small_ttl_without_floor() {
+    let mut cache = DnsCache::new(Duration::from_secs(60));
+    let (query, response) = dns_query_response(1);
+    cache.insert(&query, response);
+    assert!(cache.lookup(&query).is_some());
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(
+        cache.lookup(&query).is_none(),
+        "a 1 s TTL must expire after 1 s, not be floored to 5 s"
+    );
+}
+
+#[test]
+fn test_dns_cache_ages_replayed_ttls() {
+    let mut cache = DnsCache::new(Duration::from_secs(60));
+    let (query, response) = dns_query_response(3);
+    cache.insert(&query, response);
+    std::thread::sleep(Duration::from_millis(1200));
+    let replayed = cache
+        .lookup(&query)
+        .expect("entry must still be cached 1.2 s into its 3 s TTL");
+    let ttl = u32::from_be_bytes([replayed[28], replayed[29], replayed[30], replayed[31]]);
+    assert!(
+        ttl < 3,
+        "replayed TTL must be aged below the original 3 s, got {ttl}"
+    );
+    assert!(
+        ttl >= 1,
+        "replayed TTL must not be aged past the elapsed time, got {ttl}"
+    );
+}

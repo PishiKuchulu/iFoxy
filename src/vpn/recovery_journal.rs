@@ -254,7 +254,16 @@ impl RecoveryJournal {
         // broke every journal test on Windows CI (run 41262884808) while
         // Linux fsync on a read fd worked fine.
         {
-            let mut tmp = fs::File::create(&temp_path)?;
+            // create_new: the tmp path is predictable inside the
+            // user's config dir and this process runs elevated, so
+            // File::create (truncate + follow) would write the journal
+            // through a planted symlink (audit hardening, v1.0.33).
+            // A leftover tmp from a crash mid-flush now fails loudly
+            // instead of being silently truncated through.
+            let mut tmp = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
             tmp.write_all(json.as_bytes())?;
             tmp.sync_all()?;
         }
@@ -393,14 +402,17 @@ impl RecoveryJournal {
         // 4. Revert any persistent kill-switch state (R-8, R-9): WFP
         // filters on Windows (normally reaped with the dynamic session,
         // but a journal entry means a previous run asked for removal),
-        // the iptables chains on Linux (which genuinely persist).
+        // the iptables chains on Linux (which genuinely persist). The
+        // sweep goes through the INJECTED backend (audit fix,
+        // v1.0.33): it used to construct the production firewall
+        // backend directly, so nominally mocked recovery tests ran a
+        // real firewall teardown on the test machine.
         if !state.wfp_filters.is_empty() {
             tracing::info!(
                 "Replaying killswitch cleanup for {} recorded rules",
                 state.wfp_filters.len()
             );
-            let fw = crate::vpn::killswitch::platform_firewall_backend();
-            if let Err(e) = fw.remove_kill_switch(&state.wfp_filters) {
+            if let Err(e) = backend.remove_kill_switch(&state.wfp_filters) {
                 hard_failures.push(format!("kill-switch removal failed: {e}"));
             }
         }
@@ -412,8 +424,7 @@ impl RecoveryJournal {
         // Best-effort: on a machine without iptables no chain can exist.
         #[cfg(target_os = "linux")]
         if state.wfp_filters.is_empty() {
-            let fw = crate::vpn::killswitch::platform_firewall_backend();
-            if let Err(e) = fw.remove_kill_switch(&[]) {
+            if let Err(e) = backend.remove_kill_switch(&[]) {
                 tracing::warn!(
                     "Recovery: best-effort stale kill-switch sweep failed: {}",
                     e
