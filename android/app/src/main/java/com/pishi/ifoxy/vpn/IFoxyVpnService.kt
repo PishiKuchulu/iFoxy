@@ -958,6 +958,10 @@ class IFoxyVpnService : VpnService() {
                             AppLogger.i(TAG, "upstream tunnel is healthy again")
                             _lastError.value = null
                             statusLabel = connectedLabel()
+                            // A17: the public state tracks the label —
+                            // a session that dropped to RECONNECTING
+                            // returns to CONNECTED when it recovers.
+                            _state.value = ConnectionState.CONNECTED
                             updateNotification(statusLabel)
                         }
                         consecutiveFailures = 0
@@ -970,6 +974,10 @@ class IFoxyVpnService : VpnService() {
                             AppLogger.i(TAG, "no usable network; holding the session and waiting for connectivity")
                             waitingForNetwork = true
                             statusLabel = "Waiting for network\u2026"
+                            // A17: publish the same state the
+                            // notification shows — the tunnel is not
+                            // usable, so CONNECTED would be a lie.
+                            _state.value = ConnectionState.RECONNECTING
                             updateNotification(statusLabel)
                         }
                         consecutiveFailures = 0
@@ -983,6 +991,7 @@ class IFoxyVpnService : VpnService() {
                     AppLogger.w(TAG, "upstream tunnel is down; attempting to reconnect")
                     runCatching { current?.close() }
                     statusLabel = "Reconnecting\u2026"
+                    _state.value = ConnectionState.RECONNECTING
                     updateNotification(statusLabel)
 
                     val dialResult = try {
@@ -1033,6 +1042,7 @@ class IFoxyVpnService : VpnService() {
                     _lastError.value = null
 
                     statusLabel = connectedLabel()
+                    _state.value = ConnectionState.CONNECTED
                     updateNotification(statusLabel)
                     AppLogger.i(TAG, "upstream tunnel reconnected via ${activeCandidate().authority}")
 
