@@ -39,6 +39,16 @@ pub trait NetworkBackend: Send + Sync {
     fn delete_route(&self, route: &RouteDefinition, if_index: u32) -> Result<(), RouteError>;
     fn set_system_proxy(&self, port: u16) -> Result<(), String>;
     fn restore_system_proxy(&self, backup: Option<&ProxySettingsBackup>) -> Result<(), String>;
+    /// Remove leftover kill-switch state (the recorded WFP filter ids
+    /// on Windows; the persistent iptables chains on Linux, where an
+    /// empty list still sweeps the chains). The default delegates to
+    /// the platform firewall backend, which is what the production
+    /// backends want. Crash recovery routes the sweep through this
+    /// method so tests that inject a mock backend never touch the
+    /// machine's real firewall (audit fix, v1.0.33).
+    fn remove_kill_switch(&self, filter_ids: &[u64]) -> Result<(), String> {
+        crate::vpn::killswitch::platform_firewall_backend().remove_kill_switch(filter_ids)
+    }
 }
 
 /// Production network backend using native Windows IP Helper & Registry APIs (M4, H3).
@@ -383,6 +393,7 @@ pub struct MockNetworkBackend {
     pub installed_routes: Arc<Mutex<Vec<(RouteDefinition, u32)>>>,
     pub deleted_routes: Arc<Mutex<Vec<(RouteDefinition, u32)>>>,
     pub proxy_enabled_port: Arc<Mutex<Option<u16>>>,
+    pub removed_kill_switch_calls: Arc<Mutex<Vec<Vec<u64>>>>,
 }
 
 #[cfg(any(test, feature = "test-doubles"))]
@@ -393,6 +404,7 @@ impl MockNetworkBackend {
             installed_routes: Arc::new(Mutex::new(Vec::new())),
             deleted_routes: Arc::new(Mutex::new(Vec::new())),
             proxy_enabled_port: Arc::new(Mutex::new(None)),
+            removed_kill_switch_calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -441,6 +453,14 @@ impl NetworkBackend for MockNetworkBackend {
 
     fn restore_system_proxy(&self, _backup: Option<&ProxySettingsBackup>) -> Result<(), String> {
         *self.proxy_enabled_port.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        Ok(())
+    }
+
+    fn remove_kill_switch(&self, filter_ids: &[u64]) -> Result<(), String> {
+        self.removed_kill_switch_calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(filter_ids.to_vec());
         Ok(())
     }
 }

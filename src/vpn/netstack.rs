@@ -77,6 +77,11 @@ struct UnackedSegment {
 struct DnsCacheEntry {
     response_payload: Vec<u8>,
     expires_at: Instant,
+    stored_at: Instant,
+    /// The effective cache lifetime chosen at insert time (upstream
+    /// min TTL, capped); a replay older than this is a miss even
+    /// before the TTL rewriting below is considered.
+    ttl: Duration,
 }
 
 #[derive(Debug)]
@@ -108,34 +113,55 @@ impl DnsCache {
         let key = Self::extract_key(query)?;
         let now = Instant::now();
 
+        let mut stale = false;
         if let Some(entry) = self.entries.get(&key) {
             if entry.expires_at > now {
-                let mut resp = entry.response_payload.clone();
-                if resp.len() >= 2 {
-                    resp[0] = query[0];
-                    resp[1] = query[1];
+                let elapsed = now.saturating_duration_since(entry.stored_at);
+                if elapsed < entry.ttl {
+                    let mut resp = entry.response_payload.clone();
+                    if resp.len() >= 2 {
+                        resp[0] = query[0];
+                        resp[1] = query[1];
+                    }
+                    // Age the replay: a cached answer must not claim
+                    // its original TTL after sitting in the cache
+                    // (audit fix, v1.0.33). A payload we cannot walk
+                    // safely is treated as a miss, never served stale.
+                    if age_dns_message_ttls(&mut resp, elapsed.as_secs() as u32).is_some() {
+                        return Some(resp);
+                    }
                 }
-                return Some(resp);
             }
+            stale = true;
         }
-        self.entries.remove(&key);
+        if stale {
+            self.entries.remove(&key);
+        }
         None
     }
 
     pub fn insert(&mut self, query: &[u8], response: Vec<u8>) {
         if let Some(key) = Self::extract_key(query) {
             // Honor the records' own TTL (minimum across the answer
-            // section), clamped to [5 s, 1 h] and capped by this
-            // cache's configured TTL, which remains the fallback for
-            // responses whose TTL cannot be parsed (wave-3 review,
-            // H-7). Serving an entry past its upstream TTL is the bug
-            // being fixed; the cap is local freshness policy.
-            let ttl = dns_response_min_ttl(&response)
-                .map(|secs| {
-                    Duration::from_secs((secs as u64).clamp(5, 3600)).min(self.default_ttl)
-                })
-                .unwrap_or(self.default_ttl);
-            let expires_at = Instant::now() + ttl;
+            // section), capped at 1 h and by this cache's configured
+            // TTL, which remains the fallback for responses whose TTL
+            // cannot be parsed (wave-3 review, H-7). Serving an entry
+            // past its upstream TTL is the bug being fixed; the cap is
+            // local freshness policy.
+            //
+            // v1.0.33 audit fix: an upstream TTL of 0 means "do not
+            // cache" (RFC 2181 §8) — the old [5 s, 1 h] clamp silently
+            // cached such answers for 5 s. Small positive TTLs are now
+            // honored as-is instead of being floored to 5 s.
+            let ttl = match dns_response_min_ttl(&response) {
+                Some(0) => return,
+                Some(secs) => {
+                    Duration::from_secs((secs as u64).min(3600)).min(self.default_ttl)
+                }
+                None => self.default_ttl,
+            };
+            let now = Instant::now();
+            let expires_at = now + ttl;
             if self.entries.len() >= 1024 {
                 self.prune();
             }
@@ -144,6 +170,8 @@ impl DnsCache {
                 DnsCacheEntry {
                     response_payload: response,
                     expires_at,
+                    stored_at: now,
+                    ttl,
                 },
             );
         }
@@ -216,6 +244,53 @@ pub fn dns_response_min_ttl(msg: &[u8]) -> Option<u32> {
         }
     }
     min_ttl
+}
+
+/// Subtract `elapsed_secs` from the TTL of every resource record in a
+/// DNS message (answer, authority and additional sections), flooring
+/// at 0, so a replayed cached answer ages like a real resolver's
+/// would. OPT pseudo-records (type 41) are walked past but not
+/// rewritten — their "TTL" field carries EDNS flags, not a lifetime.
+/// Returns None when the message cannot be walked safely; callers
+/// must treat that as a cache miss, never serve the payload.
+fn age_dns_message_ttls(msg: &mut [u8], elapsed_secs: u32) -> Option<()> {
+    // The walk below doubles as validation even when nothing is
+    // subtracted: a malformed cached payload must be a miss, not a
+    // verbatim replay.
+    if msg.len() < 12 {
+        return None;
+    }
+    let qd_count = u16::from_be_bytes([msg[4], msg[5]]) as usize;
+    let rr_count = (u16::from_be_bytes([msg[6], msg[7]]) as usize)
+        + (u16::from_be_bytes([msg[8], msg[9]]) as usize)
+        + (u16::from_be_bytes([msg[10], msg[11]]) as usize);
+    let mut pos = 12usize;
+    for _ in 0..qd_count {
+        pos = skip_dns_name(msg, pos)?;
+        pos = pos.checked_add(4)?; // QTYPE + QCLASS
+        if pos > msg.len() {
+            return None;
+        }
+    }
+    for _ in 0..rr_count {
+        pos = skip_dns_name(msg, pos)?;
+        if pos + 10 > msg.len() {
+            return None;
+        }
+        let rr_type = u16::from_be_bytes([msg[pos], msg[pos + 1]]);
+        if rr_type != 41 && elapsed_secs > 0 {
+            let ttl =
+                u32::from_be_bytes([msg[pos + 4], msg[pos + 5], msg[pos + 6], msg[pos + 7]]);
+            let aged = ttl.saturating_sub(elapsed_secs);
+            msg[pos + 4..pos + 8].copy_from_slice(&aged.to_be_bytes());
+        }
+        let rdlen = u16::from_be_bytes([msg[pos + 8], msg[pos + 9]]) as usize;
+        pos += 10 + rdlen;
+        if pos > msg.len() {
+            return None;
+        }
+    }
+    Some(())
 }
 
 pub struct VirtualNetstack {
@@ -783,6 +858,12 @@ struct TcpFlowActor {
     inbound_buf_len: usize,
     unacked_segments: VecDeque<UnackedSegment>,
     client_fin_received: bool,
+    /// Sequence position of a client FIN that arrived ahead of data
+    /// still missing (its segment overtook an earlier gap). It is
+    /// applied only once `next_expected_client_seq` reaches it —
+    /// shutting the upstream down on an early FIN silently drops the
+    /// missing bytes (audit fix, v1.0.33).
+    pending_client_fin_seq: Option<u32>,
     h2_read_done: bool,
     last_probe: Instant,
 }
@@ -827,6 +908,7 @@ impl TcpFlowActor {
             inbound_buf_len: 0,
             unacked_segments: VecDeque::new(),
             client_fin_received: false,
+            pending_client_fin_seq: None,
             h2_read_done: false,
             last_probe: Instant::now(),
         }
@@ -1161,25 +1243,63 @@ impl TcpFlowActor {
             }
         }
 
-        // Handle client FIN
+        // Handle client FIN. A FIN occupies the sequence position
+        // just past its segment's payload; when that position is
+        // ahead of next_expected_client_seq, earlier data is still
+        // missing and the FIN must wait for the gap to fill instead
+        // of half-closing the upstream immediately (audit fix,
+        // v1.0.33).
         if (tcp_hdr.flags & TCP_FLAG_FIN) != 0 && !self.client_fin_received {
-            self.client_fin_received = true;
-            self.next_expected_client_seq = self.next_expected_client_seq.wrapping_add(1);
-            let _ = h2_write.shutdown().await;
-
-            if self.state == TcpConnState::Established {
-                self.state = TcpConnState::CloseWait;
-            } else if self.state == TcpConnState::FinWait1 || self.state == TcpConnState::FinWait2 {
-                // Both directions are finished. This is a proxy, not an
-                // endpoint that must absorb stray segments, so close the
-                // flow now instead of lingering until the idle reaper.
-                // Server-closed connections used to sit around for 120 s
-                // each and exhaust MAX_FLOWS under load (S-3).
-                self.state = TcpConnState::Closed;
+            let fin_seq = tcp_hdr.seq.wrapping_add(payload.len() as u32);
+            if fin_seq == self.next_expected_client_seq
+                || seq_before(fin_seq, self.next_expected_client_seq)
+            {
+                // In-order FIN, or a retransmitted FIN whose position
+                // the data path has already reached.
+                self.pending_client_fin_seq = None;
+                self.apply_client_fin(h2_write).await;
+            } else {
+                // FIN overtook missing data: park it. The ACK below
+                // still reports only the contiguous bytes, doubling
+                // as a duplicate ACK that prompts retransmission of
+                // the gap.
+                self.pending_client_fin_seq = Some(fin_seq);
+                self.send_ack().await;
             }
-
-            self.send_ack().await;
         }
+
+        // Apply a parked FIN once the gap it was waiting on has been
+        // filled by this packet's data path.
+        if !self.client_fin_received {
+            if let Some(fin_seq) = self.pending_client_fin_seq {
+                if fin_seq == self.next_expected_client_seq {
+                    self.pending_client_fin_seq = None;
+                    self.apply_client_fin(h2_write).await;
+                }
+            }
+        }
+    }
+
+    /// Consume the client's FIN at the current expected sequence:
+    /// half-close the upstream write side and advance the connection
+    /// state exactly as an in-order FIN has always done.
+    async fn apply_client_fin<W: AsyncWriteExt + Unpin>(&mut self, h2_write: &mut W) {
+        self.client_fin_received = true;
+        self.next_expected_client_seq = self.next_expected_client_seq.wrapping_add(1);
+        let _ = h2_write.shutdown().await;
+
+        if self.state == TcpConnState::Established {
+            self.state = TcpConnState::CloseWait;
+        } else if self.state == TcpConnState::FinWait1 || self.state == TcpConnState::FinWait2 {
+            // Both directions are finished. This is a proxy, not an
+            // endpoint that must absorb stray segments, so close the
+            // flow now instead of lingering until the idle reaper.
+            // Server-closed connections used to sit around for 120 s
+            // each and exhaust MAX_FLOWS under load (S-3).
+            self.state = TcpConnState::Closed;
+        }
+
+        self.send_ack().await;
     }
 
     async fn drain_reassembly_queue<W: AsyncWriteExt + Unpin>(&mut self, h2_write: &mut W) -> bool {
