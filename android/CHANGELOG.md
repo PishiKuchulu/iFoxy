@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.33 (versionCode 70) - external-audit fix wave
+
+- The public connection state now matches the notification while
+  the watchdog recovers: it reports Reconnecting while redialing
+  or waiting for a network instead of staying Connected, and
+  returns to Connected when the connection is healthy again.
+  Home, the quick-settings tile and the widget render the new
+  state.
+- A transient 400/403 from the token endpoint no longer erases
+  the stored session and signs you out: a refresh rejection is
+  permanent only on HTTP 401 or FxA errno 110 (invalid token).
+  Regression tests cover the new classification.
+- The in-memory fallback store behind the encrypted preferences
+  is now one shared instance per store, so a sign-in saved by one
+  component in a fallback launch is visible to the others.
+
 ## 1.0.32 (versionCode 69) - browser clears the challenge for sign-in
 
 - Fixed sign-in failing on flagged networks even through the
