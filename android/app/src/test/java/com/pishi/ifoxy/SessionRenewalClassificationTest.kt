@@ -4,6 +4,7 @@ import com.pishi.ifoxy.data.FastlyBlockedException
 import com.pishi.ifoxy.data.FxaApiError
 import com.pishi.ifoxy.data.FxaRefreshFailure
 import com.pishi.ifoxy.data.isBotProtectionBlock
+import com.pishi.ifoxy.data.isPermanentRefreshRejection
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,5 +51,36 @@ class SessionRenewalClassificationTest {
                 blockedByBotProtection = true,
             ).blockedByBotProtection,
         )
+    }
+
+    // Permanent-refresh classification (v1.0.33): the old rule treated
+    // every 400/401/403 as permanent and erased the stored session, so
+    // a transient WAF/rate-limit 403 signed the user out. Permanent now
+    // requires FxA's own verdict: HTTP 401, or errno 110 at any status.
+
+    @Test
+    fun `a 400 without errno evidence is not a permanent refresh rejection`() {
+        assertFalse(FxaApiError("Bad request", null, 400).isPermanentRefreshRejection())
+        assertFalse(FxaApiError("Bad request", 109, 400).isPermanentRefreshRejection())
+    }
+
+    @Test
+    fun `a 403 without errno evidence is not a permanent refresh rejection`() {
+        assertFalse(FxaApiError("Forbidden", null, 403).isPermanentRefreshRejection())
+    }
+
+    @Test
+    fun `a 400 with errno 110 is a permanent refresh rejection`() {
+        assertTrue(FxaApiError("Invalid authentication token", 110, 400).isPermanentRefreshRejection())
+    }
+
+    @Test
+    fun `a 403 with errno 110 is a permanent refresh rejection`() {
+        assertTrue(FxaApiError("Invalid authentication token", 110, 403).isPermanentRefreshRejection())
+    }
+
+    @Test
+    fun `a 401 is a permanent refresh rejection`() {
+        assertTrue(FxaApiError("Unauthorized", null, 401).isPermanentRefreshRejection())
     }
 }
