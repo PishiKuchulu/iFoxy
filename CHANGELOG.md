@@ -1,5 +1,25 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.33 combined release - external-audit fix wave (desktop and Android)
+
+Fixes every confirmed defect from the verified external audit of
+v1.0.32 (15 confirmed, 2 partial, 0 refuted). Desktop: the status
+response now spells proxy-only mode the way the UI expects, so
+the proxy endpoint row shows again; the power button can cancel
+a pending connect instead of ignoring clicks; a rejected
+disconnect no longer displays as disconnected; the pkexec
+system-proxy path passes the account name (not the numeric uid)
+to runuser, so GNOME proxy backup/restore works again; the
+netstack no longer loses data when a FIN overtakes a missing
+segment, and the DNS cache honors TTL 0 and small TTLs and ages
+TTLs when replaying; crash recovery no longer runs the
+production firewall sweep inside mocked tests; journal and
+session tmp files are created without following symlinks, and
+kill-switch cleanup logs removal failures.
+
+Android 1.0.33 (versionCode 70): see android/CHANGELOG.md.
+Supersedes v1.0.32.
+
 ## v1.0.32 combined release - Android sign-in challenge clearance
 
 Android-focused fix (desktop unchanged, still 0.2.3): on flagged
