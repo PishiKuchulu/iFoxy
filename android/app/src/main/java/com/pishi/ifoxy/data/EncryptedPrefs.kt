@@ -4,8 +4,23 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "EncryptedPrefs"
+
+/**
+ * Process-wide session-only fallback stores, keyed by store name.
+ * Every component that lands on the fallback for the same store must
+ * share ONE instance: a fresh map per call meant tokens saved through
+ * one component were invisible to the others for the whole launch, so
+ * cross-component auth sharing broke exactly in the degraded launches
+ * the fallback exists for (audit fix A23, v1.0.33). Still nothing is
+ * written to disk.
+ */
+private val inMemoryFallbacks = ConcurrentHashMap<String, InMemorySharedPreferences>()
+
+private fun sharedInMemoryFallback(name: String): InMemorySharedPreferences =
+    inMemoryFallbacks.computeIfAbsent(name) { InMemorySharedPreferences() }
 
 /**
  * STB-FX-07: EncryptedSharedPreferences can fail permanently when the
@@ -68,6 +83,6 @@ fun createEncryptedPrefsWithRecovery(context: Context, name: String): SharedPref
             second,
         )
         deleteLegacyPlaintextFallback()
-        return InMemorySharedPreferences()
+        return sharedInMemoryFallback(name)
     }
 }
