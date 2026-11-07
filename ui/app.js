@@ -14,6 +14,7 @@
   let serverList = [];
   let statusPollInterval = null;
   let opInFlight = false; // F3: a connect/disconnect invoke is in flight
+  let cancelRequested = false; // D09: user cancelled the in-flight connect invoke
   let connectedSince = null; // D9: client-side session start timestamp
   let serverListError = false; // F13: last fetch failed -> show a retry row
   let lastLatencyText = 'Auto'; // last known latency label for the location card
@@ -758,6 +759,22 @@
     return settingTunnelMode ? settingTunnelMode.value : 'proxy_only';
   }
 
+  // D09: cancel a connect whose invoke is still pending. The bridge
+  // awaits the whole backend connect before answering connect_vpn, so
+  // the click that cancels cannot go through the normal disconnect
+  // branch (opInFlight is held by the pending invoke). disconnect_vpn
+  // is the existing cancel route: its bridge handler calls
+  // vpn_service.cancel() first, which aborts the pending connect; the
+  // connect invoke then settles as a failure and its handler reads
+  // cancelRequested to land on 'disconnected' instead of 'failed'.
+  function cancelPendingConnect() {
+    if (cancelRequested) return; // one cancel per pending connect
+    cancelRequested = true;
+    log('User cancelled connection in progress.');
+    setVpnState('disconnecting');
+    invoke('disconnect_vpn');
+  }
+
   // Power Button Action with real cancellation.
   // F3: opInFlight guards the whole operation — extra clicks are
   // ignored and pollVpnStatus will not overwrite the optimistic state
@@ -767,7 +784,12 @@
       showScreen('screen-login');
       return;
     }
-    if (opInFlight) return;
+    if (opInFlight) {
+      // D09: swallowing this click while a connect invoke is pending
+      // would leave the user unable to cancel a hanging connect.
+      if (vpnState === 'connecting') cancelPendingConnect();
+      return;
+    }
 
     if (vpnState === 'disconnected' || vpnState === 'failed') {
       opInFlight = true;
@@ -788,24 +810,52 @@
             lastLatencyText = `${res.latency_ms} ms`;
             updateLatencyBadge();
           }
+        } else if (cancelRequested) {
+          // D09: the failure is the user's own cancel landing
+          // ("Cancelled by user" from the actor), not a real failure.
+          log('Connection cancelled.');
+          setVpnState('disconnected');
         } else {
           const err = (res && res.error) ? res.error : 'Connection initiation failed';
           log(`Failed to initiate connect: ${err}`);
           setVpnState('failed', err);
         }
       } catch (err) {
-        log(`Connection exception: ${err}`);
-        setVpnState('failed', err.toString());
+        if (cancelRequested) {
+          log('Connection cancelled.');
+          setVpnState('disconnected');
+        } else {
+          log(`Connection exception: ${err}`);
+          setVpnState('failed', err.toString());
+        }
       } finally {
         opInFlight = false;
+        cancelRequested = false;
       }
     } else if (vpnState === 'connecting' || vpnState === 'reconnecting' || vpnState === 'connected') {
+      const stateBefore = vpnState;
       opInFlight = true;
       try {
-        log(vpnState === 'connected' ? 'Disconnecting VPN...' : 'User cancelled connection in progress.');
+        log(stateBefore === 'connected' ? 'Disconnecting VPN...' : 'User cancelled connection in progress.');
         setVpnState('disconnecting');
-        await invoke('disconnect_vpn');
-        setVpnState('disconnected');
+        const res = await invoke('disconnect_vpn');
+        if (res && res.success) {
+          setVpnState('disconnected');
+        } else {
+          // D10: the bridge answers { success: false } when the
+          // Disconnect command never reached the actor — claiming
+          // 'disconnected' here would lie about a live tunnel. Keep
+          // the pre-click state, surface the failure like the connect
+          // branch does, and let the next poll resync the real state.
+          const err = (res && res.error) ? res.error : 'Disconnect failed';
+          log(`Failed to disconnect: ${err}`);
+          setVpnState(stateBefore);
+          forceResync = true;
+        }
+      } catch (err) {
+        log(`Disconnect exception: ${err}`);
+        setVpnState(stateBefore);
+        forceResync = true;
       } finally {
         opInFlight = false;
       }
