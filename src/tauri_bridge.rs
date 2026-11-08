@@ -486,7 +486,7 @@ impl AppState {
             "get_vpn_status" => {
                 let vpn_state = self.vpn_service.get_state();
                 let (bytes_sent, bytes_received) = self.vpn_service.get_traffic_metrics().await;
-                let status = match vpn_state {
+                match vpn_state {
                     ConnectionState::Connected { target, mode } => json!({
                         "state": "connected",
                         "mode": match mode {
@@ -527,8 +527,7 @@ impl AppState {
                         "bytes_sent": bytes_sent,
                         "bytes_received": bytes_received,
                     }),
-                };
-                status
+                }
             }
             "get_entitlement" => {
                 let access_token = match self.token_provider.get_access_token_async().await {
