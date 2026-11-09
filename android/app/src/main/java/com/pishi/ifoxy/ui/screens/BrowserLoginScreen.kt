@@ -57,6 +57,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.BrowserTokenRequest
+import com.pishi.ifoxy.data.FIREFOX_ANDROID_UA
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
@@ -77,9 +78,6 @@ private const val CMD_CAN_LINK_ACCOUNT = "fxaccounts:can_link_account"
 private const val CMD_LOGIN = "fxaccounts:login"
 
 private val SESSION_TOKEN_HEX = Regex("^[0-9a-f]{64}$")
-
-private const val FIREFOX_ANDROID_UA =
-    "Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
 
 private fun jsString(value: String): String = JSONObject.quote(value)
 
@@ -356,6 +354,20 @@ internal class InPageExchangeOutcome(
 internal fun isBlockedLikeExchange(status: Int, hasTokenJson: Boolean): Boolean =
     status == 406 || (status == 200 && !hasTokenJson)
 
+/** Whether an exchange outcome ends the clearance flow in
+ *  [runTokenExchangeWithClearance]. Only a REAL FxA answer is
+ *  terminal: an HTTP response was received (status > 0) and it is
+ *  not block-like — FxA has spoken, and more recovery cannot change
+ *  its answer. A "no answer" outcome (status 0 when the fetch
+ *  rejected, -1 when it never returned — the 2026-11-09 on-device
+ *  log, where the cookie retry died with "TypeError: Failed to
+ *  fetch") says nothing about FxA: classifying it as terminal used
+ *  to abort the flow BEFORE the WebView-navigation clearance step,
+ *  so sign-in fell back to the native exchange and its dead end.
+ *  The poll loop in the clearance flow uses this same rule. */
+internal fun isTerminalExchangeOutcome(outcome: InPageExchangeOutcome): Boolean =
+    !outcome.blockedLike && outcome.status > 0
+
 /** The scheme://host[:port]/ origin of a URL, or null when it does
  *  not parse into one. Used to open the FxA API host itself in the
  *  browser so its own pages can clear the bot-protection challenge. */
@@ -433,7 +445,7 @@ internal suspend fun runTokenExchangeWithClearance(
 ): JSONObject? {
     val first = runTokenExchangeInPage(webView, bridge, spec)
     if (first.tokenJson != null) return first.tokenJson
-    if (!first.blockedLike) return null
+    if (isTerminalExchangeOutcome(first)) return null
 
     AppLogger.w(
         "BrowserLoginScreen",
@@ -447,7 +459,7 @@ internal suspend fun runTokenExchangeWithClearance(
         timeoutMs = 15_000,
     )
     if (withCookies.tokenJson != null) return withCookies.tokenJson
-    if (!withCookies.blockedLike) return null
+    if (isTerminalExchangeOutcome(withCookies)) return null
 
     val apiOrigin = apiOriginOf(spec.url) ?: return null
     AppLogger.i(
@@ -467,7 +479,7 @@ internal suspend fun runTokenExchangeWithClearance(
             timeoutMs = 12_000,
         )
         if (attempt.tokenJson != null) return attempt.tokenJson
-        if (!attempt.blockedLike && attempt.status > 0) {
+        if (isTerminalExchangeOutcome(attempt)) {
             // FxA itself answered (a rejection the native path will
             // report faithfully); more waiting cannot change it.
             AppLogger.w(
