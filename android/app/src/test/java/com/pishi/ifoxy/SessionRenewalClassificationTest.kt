@@ -5,6 +5,7 @@ import com.pishi.ifoxy.data.FxaApiError
 import com.pishi.ifoxy.data.FxaRefreshFailure
 import com.pishi.ifoxy.data.isBotProtectionBlock
 import com.pishi.ifoxy.data.isPermanentRefreshRejection
+import com.pishi.ifoxy.data.shouldRetryRefreshOnAlternateHost
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -82,5 +83,37 @@ class SessionRenewalClassificationTest {
     @Test
     fun `a 401 is a permanent refresh rejection`() {
         assertTrue(FxaApiError("Unauthorized", null, 401).isPermanentRefreshRejection())
+    }
+
+    // Refresh host fallback (v1.0.34, upstream v2.0.2's design): the
+    // refresh grant goes to oauth.accounts.firefox.com first and is
+    // retried against api.accounts.firefox.com ONLY when bot
+    // protection blocked the first attempt — the two hosts sit
+    // behind independent Fastly fronting. Any other failure must not
+    // trigger the fallback.
+
+    @Test
+    fun `a blocked refresh grant earns the alternate host attempt`() {
+        assertTrue(shouldRetryRefreshOnAlternateHost(FastlyBlockedException("blocked")))
+    }
+
+    @Test
+    fun `a block wrapped in the cause chain still earns the fallback`() {
+        val wrapped = java.io.IOException("request failed", FastlyBlockedException("blocked"))
+        assertTrue(shouldRetryRefreshOnAlternateHost(wrapped))
+    }
+
+    @Test
+    fun `an fxA rejection does not trigger the host fallback`() {
+        assertFalse(
+            shouldRetryRefreshOnAlternateHost(FxaApiError("Invalid refresh token", 110, 401)),
+        )
+    }
+
+    @Test
+    fun `a plain transport failure does not trigger the host fallback`() {
+        assertFalse(
+            shouldRetryRefreshOnAlternateHost(java.io.IOException("network unreachable")),
+        )
     }
 }
