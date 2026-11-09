@@ -425,7 +425,22 @@ class FxaAuthRepository(
                 AppLogger.w(TAG, "could not solve the Fastly challenge", solveFailure)
                 throw FastlyBlockedException(FRIENDLY_406_MESSAGE, solveFailure)
             }
-            response = ControlPlaneHttp.client.newCall(buildRequest()).execute()
+            // Diagnostic (v1.0.35): record what the retry actually
+            // carries — the UA it sends and the NAMES (never the
+            // values) of the cookies the shared jar attaches for
+            // this URL — so a retry that still returns 406 can be
+            // told apart from a solve whose clearance never reached
+            // the request. Compare with the solver's own log of the
+            // winning probe UA.
+            val retryRequest = buildRequest()
+            val retryCookieNames = ControlPlaneHttp.cookieJar.loadForRequest(url).map { it.name }
+            AppLogger.i(
+                TAG,
+                "Fastly challenge solved; retrying $method $path (attempt ${attempts + 1}) " +
+                    "with UA ${retryRequest.header("User-Agent")} and shared-jar cookies " +
+                    "$retryCookieNames for ${url.host}",
+            )
+            response = ControlPlaneHttp.client.newCall(retryRequest).execute()
             attempts++
         }
 
