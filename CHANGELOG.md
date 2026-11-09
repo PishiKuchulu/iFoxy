@@ -1,5 +1,19 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.36 combined release - manual Fastly verification step (Android)
+
+Android-focused feature (desktop unchanged, still 0.2.3):
+when Mozilla's bot protection demands an interactive CAPTCHA
+— the one challenge type no native solver can answer — the
+browser sign-in now offers a manual verification step: the
+user completes the check on Mozilla's own page inside the
+app, the cookies the browser earned are copied into the
+native cookie jar, and the token exchange is retried once
+automatically.
+
+Android 1.0.36 (versionCode 73): see android/CHANGELOG.md.
+Supersedes v1.0.35.
+
 ## v1.0.35 combined release - Fastly solver diagnostic (Android)
 
 Android-focused diagnostic release (desktop unchanged, still
