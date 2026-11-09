@@ -1,5 +1,20 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.35 combined release - Fastly solver diagnostic (Android)
+
+Android-focused diagnostic release (desktop unchanged, still
+0.2.3): the Fastly challenge solver's working cookie jar now
+starts empty, exactly like upstream FoxyVPN v2.0.2 (v1.0.34
+seeded it from the shared jar, which blinded the next solve),
+and the solver plus the FxA retry loop now log the full
+acquisition path — probe responses, the winning host/UA pair,
+installed clearance cookie names, and what the retried request
+carries — to pin down why a clearance earned on the owner's
+network does not clear the token POST.
+
+Android 1.0.35 (versionCode 72): see android/CHANGELOG.md.
+Supersedes v1.0.34.
+
 ## v1.0.34 combined release - upstream Fastly solver port (Android)
 
 Android-focused fix (desktop unchanged, still 0.2.3): the native
