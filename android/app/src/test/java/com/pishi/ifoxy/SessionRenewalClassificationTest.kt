@@ -1,9 +1,12 @@
 package com.pishi.ifoxy
 
 import com.pishi.ifoxy.data.FastlyBlockedException
+import com.pishi.ifoxy.data.FastlyCaptchaException
+import com.pishi.ifoxy.data.FastlyChallengeError
 import com.pishi.ifoxy.data.FxaApiError
 import com.pishi.ifoxy.data.FxaRefreshFailure
 import com.pishi.ifoxy.data.isBotProtectionBlock
+import com.pishi.ifoxy.data.isCaptchaChallenge
 import com.pishi.ifoxy.data.isPermanentRefreshRejection
 import com.pishi.ifoxy.data.shouldRetryRefreshOnAlternateHost
 import org.junit.Assert.assertFalse
@@ -115,5 +118,36 @@ class SessionRenewalClassificationTest {
         assertFalse(
             shouldRetryRefreshOnAlternateHost(java.io.IOException("network unreachable")),
         )
+    }
+
+    // CAPTCHA signal (v1.0.36): the manual verification step keys
+    // off a typed failure, never the message text — only a chain
+    // carrying FastlyCaptchaException counts, so the challenge step
+    // is offered for exactly the interactive-CAPTCHA failure.
+
+    @Test
+    fun `a captcha failure is detected directly`() {
+        assertTrue(FastlyCaptchaException("captcha").isCaptchaChallenge())
+    }
+
+    @Test
+    fun `a captcha failure is detected through the blocked wrapper`() {
+        // The shape the browser sign-in actually surfaces: fxaDo
+        // wraps the solver's failure in FastlyBlockedException.
+        val blocked = FastlyBlockedException("blocked", FastlyCaptchaException("captcha"))
+        assertTrue(blocked.isCaptchaChallenge())
+    }
+
+    @Test
+    fun `a non-captcha solve failure is not a captcha challenge`() {
+        val blocked = FastlyBlockedException("blocked", FastlyChallengeError("no challenge page"))
+        assertFalse(blocked.isCaptchaChallenge())
+        assertFalse(FastlyBlockedException("blocked").isCaptchaChallenge())
+    }
+
+    @Test
+    fun `unrelated failures are not captcha challenges`() {
+        assertFalse(FxaApiError("Invalid authentication token", 110, 401).isCaptchaChallenge())
+        assertFalse(java.io.IOException("network unreachable").isCaptchaChallenge())
     }
 }
