@@ -1,6 +1,9 @@
 package com.pishi.ifoxy.data
 
+import android.webkit.CookieManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -8,6 +11,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -16,7 +20,7 @@ class FastlyChallengeError(message: String) : Exception(message)
 
 private const val SOLVE_TIMEOUT_SECONDS = 60L
 
-private const val MAX_POST_BACK_ROUNDS = 3
+private const val MAX_POST_BACK_ROUNDS = 8
 
 private const val SOLVER_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -27,36 +31,119 @@ private const val HTML_ACCEPT =
     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
 private val CHALLENGE_PREFIX_REGEX = Regex("/_fs-ch-[A-Za-z0-9]+")
-private val INIT_CALL_REGEX = Regex("init\\((\\[[^\\]]*\\]),\\s*\"([^\"]+)\"\\s*,\\s*\"([^\"]+)\"")
+private val INIT_CALL_REGEX = Regex("\\binit\\s*\\(\\s*\\[")
 
+/** Hosts a Fastly challenge may legitimately be solved for. The
+ *  solver follows challenge pages and installs the resulting
+ *  clearance cookies, so the origin is validated against the FxA /
+ *  Guardian hosts the app actually talks to — never an arbitrary
+ *  host named by a response body. */
+private val CHALLENGE_HOSTS = setOf(
+    "vpn.mozilla.org",
+    "api.accounts.firefox.com",
+    "oauth.accounts.firefox.com",
+    "accounts.firefox.com",
+)
+
+/** FxA hosts that each receive a copy of every clearance cookie, so
+ *  a clearance earned while solving on one host also clears the
+ *  others. Deliberately NOT a blanket firefox.com domain cookie
+ *  (SEC-FX-03): the copies are scoped to the exact hosts. */
+private val CLEARANCE_COOKIE_HOSTS = listOf(
+    "api.accounts.firefox.com",
+    "accounts.firefox.com",
+    "oauth.accounts.firefox.com",
+)
+
+/** User agents the probe presents, in order: the app's native FxA
+ *  identity, the sign-in browser's, and a desktop browser's. All
+ *  three are existing constants of this codebase (the Mozilla UA /
+ *  client identity stays frozen). */
+private val PROBE_USER_AGENTS = listOf(
+    MOZILLA_VPN_USER_AGENT,
+    FIREFOX_ANDROID_UA,
+    SOLVER_USER_AGENT,
+)
+
+/**
+ * Native solver for Fastly's Client Challenge, ported from upstream
+ * FoxyVPN v2.0.2's design (the design this codebase's original
+ * solver predated). Challenge acquisition has two routes:
+ *
+ * 1. The HTTP 406 response body itself is a challenge page — solve
+ *    THAT page. Fetching a fresh page from the host root instead
+ *    does not clear the block on flagged networks.
+ * 2. The 406 body is empty (the common on-device case): probe
+ *    GET / on the challenged host, then api.accounts.firefox.com,
+ *    then accounts.firefox.com, under each of [PROBE_USER_AGENTS],
+ *    until one serves a challenge page.
+ *
+ * Solving parses the challenge list out of the challenge script's
+ * init() call with a real JSON tokenizer (the old single-regex
+ * parser broke on real scripts whose challenge data contains ']'
+ * or nested arrays), answers each challenge (SHA-256 proof-of-work,
+ * PAT token request, fabricated client metrics; an interactive
+ * CAPTCHA is a hard failure), and posts the answers back until
+ * Fastly issues clearance cookies. The cookies land in the shared
+ * control-plane jar the FxA/Guardian clients retry with.
+ */
 class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
+
+    private companion object {
+        /** Serializes solves: concurrent 406s (an FxA call and a
+         *  Guardian call racing) must not run two post-back flows
+         *  against the same challenge state at once. */
+        val solverMutex = Mutex()
+    }
 
     suspend fun solveAndInstall(
         challengedBody: String? = null,
         challengedOrigin: String? = null,
-    ) = withContext(Dispatchers.IO) {
-        if (!challengedBody.isNullOrEmpty() && looksLikeChallenge(challengedBody)) {
-            val origin = challengedOrigin?.takeIf { it.startsWith("https://") }
-                ?: baseOriginFromPrefix(challengedBody)
+    ) = solverMutex.withLock {
+        withContext(Dispatchers.IO) {
+            solve(challengedBody, challengedOrigin)
+        }
+    }
+
+    private fun solve(challengedBody: String?, challengedOrigin: String?) {
+        if (!challengedBody.isNullOrEmpty() && isChallengePage(challengedBody)) {
+            val base = trustedChallengeBase(challengedOrigin)
+                ?: baseFromChallengePage(challengedBody)
                 ?: throw FastlyChallengeError("challenge page did not contain a usable origin")
-            solveChallengePage(challengedBody, origin)
-            return@withContext
+            solveChallengePage(challengedBody, base, MOZILLA_VPN_USER_AGENT)
+            return
         }
 
-        var lastError: Exception? = null
-        for (base in listOf("https://api.accounts.firefox.com", "https://accounts.firefox.com")) {
-            for (userAgent in listOf(MOZILLA_VPN_USER_AGENT, SOLVER_USER_AGENT)) {
+        val bases = listOfNotNull(
+            trustedChallengeBase(challengedOrigin),
+            "https://api.accounts.firefox.com",
+            "https://accounts.firefox.com",
+        ).distinct()
+        var lastError: FastlyChallengeError? = null
+        for (base in bases) {
+            for (userAgent in PROBE_USER_AGENTS) {
                 try {
-                    val page = fetchPage(newSolverClient(SimpleCookieJar()), base + "/", userAgent)
-                    if (!looksLikeChallenge(page)) continue
-                    solveChallengePage(page, base, userAgent)
-                    return@withContext
+                    if (solveChallengeOnHost(base, userAgent)) return
                 } catch (e: FastlyChallengeError) {
                     lastError = e
+                } catch (e: Exception) {
+                    lastError = FastlyChallengeError("Error probing $base: ${e.message}")
                 }
             }
         }
         throw lastError ?: FastlyChallengeError("host did not serve a Fastly challenge page")
+    }
+
+    /** "https://host" for a caller-supplied origin, but only when it
+     *  is an https origin on a known FxA/Guardian host. */
+    private fun trustedChallengeBase(origin: String?): String? {
+        if (origin.isNullOrBlank() || !origin.startsWith("https://")) return null
+        val host = origin.removePrefix("https://").substringBefore('/').substringBefore(':')
+        if (host !in CHALLENGE_HOSTS) return null
+        val authority = origin.removePrefix("https://").substringBefore('/')
+        val port = authority.substringAfter(':', "").toIntOrNull()
+        if (port != null && port != 443) return null
+        return "https://$host"
     }
 
     private fun baseOrigin(prefixUrl: String): String {
@@ -64,12 +151,14 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         return if (idx > 0) prefixUrl.substring(0, idx) else prefixUrl
     }
 
-    private fun baseOriginFromPrefix(html: String): String? {
+    private fun baseFromChallengePage(html: String): String? {
         val absolute = Regex("https://[A-Za-z0-9.-]+/_fs-ch-[A-Za-z0-9]+").find(html)?.value
-        return absolute?.let { baseOrigin(it) }
+        return absolute?.let { trustedChallengeBase(baseOrigin(it)) }
     }
 
-    private fun solvePow(base: String, targetHex: String): String? {
+    // TST-FX-12: internal (not private) so JVM unit tests can pin the
+    // solver primitives against real-shaped challenge payloads.
+    internal fun solvePow(base: String, targetHex: String): String? {
         val target = try {
             targetHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         } catch (e: Exception) {
@@ -113,7 +202,7 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         }
     }
 
-    private fun looksLikeChallenge(body: String): Boolean {
+    internal fun isChallengePage(body: String): Boolean {
         if (body.length !in 1..2_000_000) return false
         if (!CHALLENGE_PREFIX_REGEX.containsMatchIn(body)) return false
         return body.contains("Client Challenge", ignoreCase = true) ||
@@ -121,17 +210,49 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
             body.contains("fst-post-back")
     }
 
-    private fun parseChallengeInit(script: String): Pair<JSONArray, String> {
-        val matches = INIT_CALL_REGEX.findAll(script).toList()
-        if (matches.isEmpty()) throw FastlyChallengeError("challenge init() call not found in script")
-        val last = matches.last()
-        val challenges = try {
-            JSONArray(last.groupValues[1])
-        } catch (e: Exception) {
-            throw FastlyChallengeError("could not parse challenge list: ${e.message}")
+    /**
+     * Parses the init() call of a challenge script into its challenge
+     * list and token. Ported from upstream v2.0.2: candidates are
+     * tried newest-first with a JSON tokenizer; a candidate carrying
+     * the script prefix as its third argument must name THIS page's
+     * prefix ([prefix], e.g. "/_fs-ch-1T1wmsGaOgGaSxcX"), and the
+     * two-argument legacy form is kept as a fallback.
+     */
+    internal fun parseChallengeInit(script: String, prefix: String = ""): Pair<JSONArray, String> {
+        val matches = INIT_CALL_REGEX.findAll(script).toList().asReversed()
+        var legacyResult: Pair<JSONArray, String>? = null
+
+        for (match in matches) {
+            val start = match.range.last
+            val tokener = JSONTokener(script.substring(start))
+            val challenges = runCatching { tokener.nextValue() as? JSONArray }.getOrNull()
+            if (challenges == null || challenges.length() == 0 || challenges.length() > 16) continue
+            if (tokener.nextClean() != ',') continue
+            val token = runCatching { tokener.nextValue() as? String }.getOrNull()
+            if (token.isNullOrBlank()) continue
+
+            val allTyped = (0 until challenges.length()).all {
+                val item = challenges.optJSONObject(it)
+                item != null && item.optString("ty").isNotBlank()
+            }
+            val delim = tokener.nextClean()
+            if (delim == ',') {
+                val scriptPrefix = runCatching { tokener.nextValue() as? String }.getOrNull()
+                val nextDelim = tokener.nextClean()
+                val hasValidDelimiter = nextDelim == ')' || nextDelim == ','
+                if (hasValidDelimiter && (prefix.isEmpty() || scriptPrefix == prefix) && allTyped) {
+                    return challenges to token
+                }
+            } else if (delim == ')') {
+                if (allTyped && legacyResult == null) {
+                    legacyResult = challenges to token
+                }
+            }
         }
-        if (challenges.length() == 0) throw FastlyChallengeError("empty challenge list")
-        return challenges to last.groupValues[2]
+
+        if (legacyResult != null) return legacyResult
+
+        throw FastlyChallengeError("Could not read the Fastly challenge")
     }
 
     private fun fetchPat(client: OkHttpClient, prefixUrl: String, token: String, userAgent: String): String {
@@ -205,20 +326,78 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
                 put("auth", fetchPat(client, prefixUrl, token, userAgent))
             }
             "clientmetrics" -> clientMetricsAnswer()
-            else -> throw FastlyChallengeError("unsupported Fastly challenge type '$type' (captcha cannot be solved automatically)")
+            "captcha" -> throw FastlyChallengeError(
+                "Firefox Accounts requires a CAPTCHA. Sign in again to continue."
+            )
+            else -> throw FastlyChallengeError("unsupported Fastly challenge type '$type'")
         }
     }
 
-    private fun installChallengeCookies(solverJar: SimpleCookieJar) {
-        val cookies = solverJar.snapshotAll()
-        if (cookies.isEmpty()) throw FastlyChallengeError("challenge completed but no cookies were issued")
-        for (cookie in cookies) {
-            // SEC-FX-03: keep each cookie under the domain that issued it.
-            // The previous code re-homed every cookie to "firefox.com",
-            // widening it to all Firefox subdomains regardless of origin.
-            val domain = cookie.domain.removePrefix(".").ifBlank { "firefox.com" }
-            cookieJar.set(cookie.name, cookie.value, domain)
+    private fun installChallengeCookies(
+        solverJar: SimpleCookieJar,
+        seeded: Map<String, String>,
+    ) {
+        // Only cookies the solve itself issued or rotated: the solver
+        // jar is seeded with the shared jar's cookies, and re-homing
+        // those to other hosts would widen tokens Fastly never issued
+        // for them.
+        val fresh = solverJar.snapshotAll().filter { cookie ->
+            seeded["${cookie.name}\u0000${cookie.domain}"] != cookie.value
         }
+        if (fresh.isEmpty()) throw FastlyChallengeError("challenge completed but no cookies were issued")
+        for (cookie in fresh) {
+            // SEC-FX-03: keep each cookie under the domain that issued
+            // it, plus one copy per FxA host (CLEARANCE_COOKIE_HOSTS)
+            // so a clearance earned on one host clears the others.
+            // Never a blanket firefox.com domain cookie.
+            val ownDomain = cookie.domain.removePrefix(".")
+            val targets = (listOf(ownDomain) + CLEARANCE_COOKIE_HOSTS)
+                .filter { it.isNotBlank() }
+                .distinct()
+            for (domain in targets) {
+                cookieJar.set(cookie.name, cookie.value, domain)
+            }
+            mirrorCookieToWebView(cookie.name, cookie.value, ownDomain)
+            for (domain in CLEARANCE_COOKIE_HOSTS) {
+                mirrorCookieToWebView(cookie.name, cookie.value, domain)
+            }
+        }
+    }
+
+    /** Best-effort mirror of a clearance cookie into the WebView's
+     *  cookie store (upstream's syncToWebView direction), so the
+     *  browser sign-in context also benefits from a native solve. */
+    private fun mirrorCookieToWebView(name: String, value: String, domain: String) {
+        runCatching {
+            val manager = CookieManager.getInstance()
+            manager.setAcceptCookie(true)
+            manager.setCookie(
+                "https://$domain/",
+                "$name=$value; Domain=$domain; Path=/; Secure",
+            )
+            manager.flush()
+        }
+    }
+
+    private fun newSolverJar(): SimpleCookieJar {
+        val jar = SimpleCookieJar()
+        for (cookie in cookieJar.snapshotAll()) {
+            jar.set(cookie.name, cookie.value, cookie.domain)
+        }
+        return jar
+    }
+
+    private fun solveChallengeOnHost(base: String, userAgent: String): Boolean {
+        val solverJar = newSolverJar()
+        val solver = newSolverClient(solverJar)
+        val page = try {
+            fetchPage(solver, "$base/", userAgent)
+        } catch (e: Exception) {
+            return false
+        }
+        if (!isChallengePage(page)) return false
+        solveChallengePage(page, base, userAgent, solver, solverJar)
+        return true
     }
 
     private fun solveChallengePage(
@@ -226,18 +405,26 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         origin: String,
         userAgent: String = MOZILLA_VPN_USER_AGENT,
     ) {
-        val solverJar = SimpleCookieJar()
-        for (cookie in cookieJar.snapshotAll()) {
-            solverJar.set(cookie.name, cookie.value, cookie.domain)
-        }
-        val solver = newSolverClient(solverJar)
+        val solverJar = newSolverJar()
+        solveChallengePage(page, origin, userAgent, newSolverClient(solverJar), solverJar)
+    }
+
+    private fun solveChallengePage(
+        page: String,
+        origin: String,
+        userAgent: String,
+        solver: OkHttpClient,
+        solverJar: SimpleCookieJar,
+    ) {
+        val seeded = solverJar.snapshotAll()
+            .associate { "${it.name}\u0000${it.domain}" to it.value }
 
         val prefixMatch = CHALLENGE_PREFIX_REGEX.find(page)
             ?: throw FastlyChallengeError("challenge asset prefix not found on $origin")
         val prefixUrl = origin + prefixMatch.value
 
         val script = fetchText(solver, "$prefixUrl/script.js?reload=true", userAgent)
-        var (challenges, token) = parseChallengeInit(script)
+        var (challenges, token) = parseChallengeInit(script, prefixMatch.value)
 
         repeat(MAX_POST_BACK_ROUNDS) {
             val answers = JSONArray()
@@ -261,10 +448,10 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
                 val body = JSONObject(response.body?.string().orEmpty())
                 if (body.optString("status") == "success") {
                     val recheck = fetchPage(solver, "$origin/", userAgent)
-                    if (looksLikeChallenge(recheck)) {
+                    if (isChallengePage(recheck)) {
                         throw FastlyChallengeError("challenge cookie not accepted on this exit IP")
                     }
-                    installChallengeCookies(solverJar)
+                    installChallengeCookies(solverJar, seeded)
                     return
                 }
                 val nextChallenges = body.optJSONArray("ch")
