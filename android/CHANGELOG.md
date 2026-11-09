@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.34 (versionCode 71) - upstream Fastly solver port
+
+- The native Fastly challenge solver now follows upstream
+  FoxyVPN v2.0.2's design. A 406 whose body is a challenge page
+  is solved directly; an empty-body 406 (the on-device case) is
+  answered by probing the challenged host, then
+  api.accounts.firefox.com, then accounts.firefox.com, under
+  the app's native, browser and desktop user agents. The
+  challenge list is parsed with a JSON tokenizer with prefix
+  validation (the old single-regex parser broke on real scripts
+  whose challenge data contains nested arrays), post-back runs
+  up to 8 rounds, an interactive CAPTCHA is a hard failure, and
+  the clearance cookies are installed per FxA host in the
+  shared control-plane jar and mirrored into the WebView
+  cookie store.
+- Browser sign-in clearance: a "no answer" in-page exchange
+  outcome (status 0 or -1 — on-device, 2026-11-09, the cookie
+  retry died with "TypeError: Failed to fetch") no longer
+  aborts the recovery before the WebView-navigation step; only
+  a real FxA answer ends the flow. Regression tests cover the
+  gate classification.
+- Token renewal: the refresh grant is attempted against
+  oauth.accounts.firefox.com first and retried against
+  api.accounts.firefox.com only when bot protection blocked
+  the first attempt — the two hosts sit behind independent
+  Fastly fronting, and each attempt runs the solver first. A
+  block on both hosts still classifies as blocked, so the
+  v1.0.31 fail-fast behaviour is unchanged.
+
 ## 1.0.33 (versionCode 70) - external-audit fix wave
 
 - The public connection state now matches the notification while
