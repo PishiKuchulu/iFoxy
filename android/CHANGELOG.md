@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.36 (versionCode 73) - manual verification step for Mozilla's CAPTCHA
+
+- When Mozilla's bot protection answers the native token
+  exchange with a challenge set that demands an interactive
+  CAPTCHA — the case the 1.0.35 diagnostic log pinned down
+  (a challenge page exists only on accounts.firefox.com and
+  only for browser user agents, and its set includes
+  "captcha", the one type no native solver can answer) —
+  sign-in no longer ends at the "switch networks" message.
+  The app shows the Firefox page again inside the sign-in
+  WebView with a short instruction to complete the
+  verification, watches for the check to pass (with a
+  Continue button as the manual fallback), then copies the
+  cookies the browser holds for the Firefox Accounts hosts
+  into the native cookie jar and retries the token exchange
+  once with the same session token.
+- The CAPTCHA case is carried end-to-end as a typed failure
+  (FastlyCaptchaException, detected via
+  Throwable.isCaptchaChallenge()), never matched on message
+  text. It remains a FastlyChallengeError, so every other
+  challenge failure — and the refresh path's blocked/permanent
+  classification — behaves exactly as before. The one-retry
+  limit is deliberate: a second CAPTCHA failure surfaces the
+  existing blocked message instead of looping the user
+  through the challenge step.
+- Honest limit: whether a clearance earned in the browser is
+  honoured by the native token POST is Fastly's decision —
+  the 1.0.34 log showed an earned clearance that was not.
+  The 1.0.35 acquisition logging stays in place, and the
+  harvest and the retry are logged (cookie names and domains
+  only, never values), so the outcome is visible either way.
+
 ## 1.0.35 (versionCode 72) - Fastly solver diagnostic
 
 - Diagnostic release for the sign-in block that survived
