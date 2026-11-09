@@ -18,6 +18,8 @@ import java.util.concurrent.TimeUnit
 
 class FastlyChallengeError(message: String) : Exception(message)
 
+private const val TAG = "FastlyChallengeSolver"
+
 private const val SOLVE_TIMEOUT_SECONDS = 60L
 
 private const val MAX_POST_BACK_ROUNDS = 8
@@ -84,8 +86,14 @@ private val PROBE_USER_AGENTS = listOf(
  * or nested arrays), answers each challenge (SHA-256 proof-of-work,
  * PAT token request, fabricated client metrics; an interactive
  * CAPTCHA is a hard failure), and posts the answers back until
- * Fastly issues clearance cookies. The cookies land in the shared
+ * Fastly issues clearance cookies. The solver works in its own
+ * cookie jar, EMPTY at the start of every solve (upstream parity);
+ * the earned cookies are then installed into the shared
  * control-plane jar the FxA/Guardian clients retry with.
+ * Acquisition and installation are logged (v1.0.35 diagnostic):
+ * probe responses used to be invisible, which made a failed
+ * solve impossible to tell apart from a clearance that was
+ * earned but never honoured.
  */
 class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
 
@@ -110,7 +118,12 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
             val base = trustedChallengeBase(challengedOrigin)
                 ?: baseFromChallengePage(challengedBody)
                 ?: throw FastlyChallengeError("challenge page did not contain a usable origin")
-            solveChallengePage(challengedBody, base, MOZILLA_VPN_USER_AGENT)
+            val rounds = solveChallengePage(challengedBody, base, MOZILLA_VPN_USER_AGENT)
+            AppLogger.i(
+                TAG,
+                "Fastly challenge solved from the 406 response body: base=$base, " +
+                    "UA=$MOZILLA_VPN_USER_AGENT, post-back rounds=$rounds",
+            )
             return
         }
 
@@ -176,13 +189,25 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         return null
     }
 
-    private fun fetchPage(client: OkHttpClient, url: String, userAgent: String): String {
+    /** A fetched page plus the HTTP status [fetchPage] discards:
+     *  the diagnostic probe log (v1.0.35) needs the status to tell
+     *  a served challenge page apart from a plain 200/403/404. */
+    private data class FetchedPage(val status: Int, val body: String)
+
+    private fun fetchPage(client: OkHttpClient, url: String, userAgent: String): String =
+        fetchPageWithStatus(client, url, userAgent).body
+
+    private fun fetchPageWithStatus(
+        client: OkHttpClient,
+        url: String,
+        userAgent: String,
+    ): FetchedPage {
         val request = Request.Builder().url(url)
             .header("User-Agent", userAgent)
             .header("Accept", HTML_ACCEPT)
             .build()
         client.newCall(request).execute().use { response ->
-            return response.body?.string().orEmpty()
+            return FetchedPage(response.code, response.body?.string().orEmpty())
         }
     }
 
@@ -333,17 +358,15 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         }
     }
 
-    private fun installChallengeCookies(
-        solverJar: SimpleCookieJar,
-        seeded: Map<String, String>,
-    ) {
-        // Only cookies the solve itself issued or rotated: the solver
-        // jar is seeded with the shared jar's cookies, and re-homing
-        // those to other hosts would widen tokens Fastly never issued
-        // for them.
-        val fresh = solverJar.snapshotAll().filter { cookie ->
-            seeded["${cookie.name}\u0000${cookie.domain}"] != cookie.value
-        }
+    private fun installChallengeCookies(solverJar: SimpleCookieJar) {
+        // The solver jar starts EMPTY (upstream parity), so every
+        // cookie in it was issued or rotated by THIS solve — exactly
+        // the set that may be installed. (It used to be seeded with
+        // the shared jar's cookies and this step filtered the seeds
+        // back out; seeding also blinded the NEXT solve, whose
+        // probes presented the freshly earned clearance and were
+        // served plain pages instead of a challenge page.)
+        val fresh = solverJar.snapshotAll()
         if (fresh.isEmpty()) throw FastlyChallengeError("challenge completed but no cookies were issued")
         for (cookie in fresh) {
             // SEC-FX-03: keep each cookie under the domain that issued
@@ -357,6 +380,13 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
             for (domain in targets) {
                 cookieJar.set(cookie.name, cookie.value, domain)
             }
+            // Diagnostic (v1.0.35): cookie NAME and domains only —
+            // the value is a credential and is never logged.
+            AppLogger.i(
+                TAG,
+                "installed clearance cookie '${cookie.name}' for domains $targets " +
+                    "(value length ${cookie.value.length})",
+            )
             mirrorCookieToWebView(cookie.name, cookie.value, ownDomain)
             for (domain in CLEARANCE_COOKIE_HOSTS) {
                 mirrorCookieToWebView(cookie.name, cookie.value, domain)
@@ -379,24 +409,44 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         }
     }
 
-    private fun newSolverJar(): SimpleCookieJar {
-        val jar = SimpleCookieJar()
-        for (cookie in cookieJar.snapshotAll()) {
-            jar.set(cookie.name, cookie.value, cookie.domain)
-        }
-        return jar
-    }
+    // TST-FX-13: internal (not private) so JVM unit tests can pin
+    // the upstream-parity empty start.
+    /** The solver's working cookie jar: EMPTY at the start of every
+     *  solve (upstream v2.0.2 parity — its solver jar is a fresh
+     *  SimpleCookieJar). It accumulates only the cookies this
+     *  solve's own responses set; [installChallengeCookies] then
+     *  installs that earned set into the shared jar. */
+    internal fun newSolverJar(): SimpleCookieJar = SimpleCookieJar()
 
     private fun solveChallengeOnHost(base: String, userAgent: String): Boolean {
         val solverJar = newSolverJar()
         val solver = newSolverClient(solverJar)
-        val page = try {
-            fetchPage(solver, "$base/", userAgent)
+        val fetched = try {
+            fetchPageWithStatus(solver, "$base/", userAgent)
         } catch (e: Exception) {
+            // Diagnostic (v1.0.35): a probe dying in transport used
+            // to be indistinguishable from one served a plain page;
+            // log which happened, then keep the old behaviour.
+            AppLogger.w(
+                TAG,
+                "Fastly probe $base failed in transport " +
+                    "(${e.javaClass.simpleName}: ${e.message}); UA=$userAgent",
+            )
             return false
         }
-        if (!isChallengePage(page)) return false
-        solveChallengePage(page, base, userAgent, solver, solverJar)
+        val challengePage = isChallengePage(fetched.body)
+        AppLogger.i(
+            TAG,
+            "Fastly probe $base -> HTTP ${fetched.status}, ${fetched.body.length} bytes, " +
+                "challengePage=$challengePage; UA=$userAgent; body head: ${fetched.body.take(200)}",
+        )
+        if (!challengePage) return false
+        val rounds = solveChallengePage(fetched.body, base, userAgent, solver, solverJar)
+        AppLogger.i(
+            TAG,
+            "Fastly challenge solved by probing: base=$base, UA=$userAgent, " +
+                "post-back rounds=$rounds",
+        )
         return true
     }
 
@@ -404,21 +454,20 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         page: String,
         origin: String,
         userAgent: String = MOZILLA_VPN_USER_AGENT,
-    ) {
+    ): Int {
         val solverJar = newSolverJar()
-        solveChallengePage(page, origin, userAgent, newSolverClient(solverJar), solverJar)
+        return solveChallengePage(page, origin, userAgent, newSolverClient(solverJar), solverJar)
     }
 
+    /** Solves an already-fetched challenge page; returns the number
+     *  of post-back rounds the solve took (diagnostic, v1.0.35). */
     private fun solveChallengePage(
         page: String,
         origin: String,
         userAgent: String,
         solver: OkHttpClient,
         solverJar: SimpleCookieJar,
-    ) {
-        val seeded = solverJar.snapshotAll()
-            .associate { "${it.name}\u0000${it.domain}" to it.value }
-
+    ): Int {
         val prefixMatch = CHALLENGE_PREFIX_REGEX.find(page)
             ?: throw FastlyChallengeError("challenge asset prefix not found on $origin")
         val prefixUrl = origin + prefixMatch.value
@@ -426,7 +475,7 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
         val script = fetchText(solver, "$prefixUrl/script.js?reload=true", userAgent)
         var (challenges, token) = parseChallengeInit(script, prefixMatch.value)
 
-        repeat(MAX_POST_BACK_ROUNDS) {
+        repeat(MAX_POST_BACK_ROUNDS) { roundIndex ->
             val answers = JSONArray()
             for (i in 0 until challenges.length()) {
                 answers.put(answerChallenge(solver, prefixUrl, token, challenges.getJSONObject(i), userAgent))
@@ -451,8 +500,8 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
                     if (isChallengePage(recheck)) {
                         throw FastlyChallengeError("challenge cookie not accepted on this exit IP")
                     }
-                    installChallengeCookies(solverJar, seeded)
-                    return
+                    installChallengeCookies(solverJar)
+                    return roundIndex + 1
                 }
                 val nextChallenges = body.optJSONArray("ch")
                 val nextToken = body.optString("tok", "")
