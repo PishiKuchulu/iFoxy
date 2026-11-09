@@ -73,6 +73,16 @@ class FxaRefreshFailure(
 internal fun Throwable.isBotProtectionBlock(): Boolean =
     generateSequence(this) { it.cause }.take(8).any { it is FastlyBlockedException }
 
+/** Whether a failed refresh-token grant may be retried against the
+ *  alternate FxA host (upstream v2.0.2's refresh design): ONLY a
+ *  bot-protection block justifies the second attempt — Fastly fronts
+ *  both token hosts independently, so a block on one says nothing
+ *  about the other. An FxA answer (FxaApiError) or a plain transport
+ *  failure must NOT trigger the fallback: FxA has spoken, or the
+ *  network is simply down, and a second host would answer the same. */
+internal fun shouldRetryRefreshOnAlternateHost(error: Throwable): Boolean =
+    error.isBotProtectionBlock()
+
 /** The outcome of a forced access-token renewal, keeping WHY it
  *  failed: callers must not treat a blocked or permanently rejected
  *  renewal like a transient error and carry on with a dead token. */
@@ -96,6 +106,12 @@ class FastlyBlockedException(message: String, cause: Throwable? = null) : Except
 class BrowserTokenRequest(val url: String, val authorization: String, val bodyJson: String)
 
 private const val FXA_AUTH_SERVER = "https://api.accounts.firefox.com/v1"
+
+/** The dedicated OAuth host: the refresh grant is attempted here
+ *  FIRST (upstream v2.0.2's order) and falls back to
+ *  [FXA_AUTH_SERVER]'s /oauth/token only when bot protection blocks
+ *  it — the two hosts sit behind independent Fastly fronting. */
+private const val FXA_OAUTH_SERVER = "https://oauth.accounts.firefox.com/v1"
 private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
 private const val PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/"
@@ -198,7 +214,25 @@ class FxaAuthRepository(
         }
 
         val tokenData = try {
-            fxaDo("POST", "/oauth/token", jsonBody = body)
+            try {
+                // Refresh grant, upstream v2.0.2's order: the OAuth
+                // host first; only a bot-protection block earns the
+                // identical grant a second attempt on the API host
+                // (each attempt runs fxaDo's own solve-and-retry
+                // loop first). Any other failure propagates straight
+                // to the classification catches below.
+                fxaDo("POST", "/token", jsonBody = body, baseUrl = FXA_OAUTH_SERVER)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (firstFailure: Exception) {
+                if (!shouldRetryRefreshOnAlternateHost(firstFailure)) throw firstFailure
+                AppLogger.w(
+                    TAG,
+                    "refresh grant blocked on oauth.accounts.firefox.com; " +
+                        "retrying the same grant on api.accounts.firefox.com",
+                )
+                fxaDo("POST", "/oauth/token", jsonBody = body)
+            }
         } catch (rejected: FxaApiError) {
             throw FxaRefreshFailure(
                 rejected.message ?: "FxA rejected the refresh token",
@@ -351,8 +385,9 @@ class FxaAuthRepository(
         path: String,
         sessionToken: String? = null,
         jsonBody: JSONObject,
+        baseUrl: String = FXA_AUTH_SERVER,
     ): JSONObject = withContext(Dispatchers.IO) {
-        val url = "$FXA_AUTH_SERVER$path".toHttpUrl()
+        val url = "$baseUrl$path".toHttpUrl()
         val bodyBytes = jsonBody.toString().toByteArray(Charsets.UTF_8)
         var tokenId: String? = null
         var hmacKey: ByteArray? = null

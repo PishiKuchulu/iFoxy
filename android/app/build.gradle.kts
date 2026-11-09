@@ -183,6 +183,10 @@ dependencies {
     implementation("org.conscrypt:conscrypt-android:2.5.2")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for local unit tests (the mockable android.jar
+    // stubs throw "not mocked"): the Fastly solver's init() parser
+    // is pinned against real-shaped challenge payloads.
+    testImplementation("org.json:json:20231013")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
