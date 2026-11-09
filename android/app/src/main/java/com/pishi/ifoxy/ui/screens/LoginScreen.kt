@@ -28,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,7 +48,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.FxaAuthRepository
+import com.pishi.ifoxy.data.isCaptchaChallenge
 import com.pishi.ifoxy.data.isUnconfirmedSession
 import com.pishi.ifoxy.ui.components.WorldMapLayer
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
@@ -82,6 +85,13 @@ fun LoginScreen(
     var completingBrowserLogin by rememberSaveable { mutableStateOf(false) }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    // Manual Fastly verification (v1.0.36): the session token whose
+    // native exchange died on an interactive CAPTCHA, and whether
+    // its one manual-verification retry has already been spent (a
+    // second CAPTCHA failure surfaces the error instead of looping
+    // back into the challenge step).
+    var captchaSessionToken by rememberSaveable { mutableStateOf<String?>(null) }
+    var captchaRetryUsed by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun handleBrowserSession(sessionToken: String, preExchangedToken: JSONObject?) {
@@ -93,10 +103,22 @@ fun LoginScreen(
             val result = authRepository.completeBrowserLogin(sessionToken, preExchangedToken)
             completingBrowserLogin = false
             result.onSuccess {
+                captchaSessionToken = null
                 browserStartUrl = null
                 onSignedIn()
             }.onFailure {
-                if (it.isUnconfirmedSession()) {
+                if (it.isCaptchaChallenge() && !captchaRetryUsed) {
+                    // Mozilla's bot protection demands an interactive
+                    // CAPTCHA — the one challenge no native code can
+                    // answer. Instead of the dead-end error, offer
+                    // the manual verification step: the user passes
+                    // the check on Mozilla's page in the WebView, its
+                    // cookies are harvested into the native jar, and
+                    // this same session token gets exactly one native
+                    // retry (see onChallengePassed below).
+                    captchaRetryUsed = true
+                    captchaSessionToken = sessionToken
+                } else if (it.isUnconfirmedSession()) {
                     // Mozilla accepted the credentials but still wants
                     // the sign-in confirmed from the email it sent; the
                     // session cannot be exchanged until that happens.
@@ -112,25 +134,57 @@ fun LoginScreen(
     }
 
     if (browserStartUrl != null) {
-        BrowserLoginScreen(
-            startUrl = browserStartUrl!!,
-            busy = completingBrowserLogin,
-            errorMessage = errorMessage,
-            onSessionCaptured = ::handleBrowserSession,
-            onCanceled = {
-                browserStartUrl = null
-                completingBrowserLogin = false
-                errorMessage = null
-            },
-            onOpenLogs = onOpenLogs,
-            exchangeToken = { token, webView, bridge ->
-                runTokenExchangeWithClearance(
-                    webView,
-                    bridge,
-                    authRepository.buildBrowserTokenRequest(token),
-                )
-            },
-        )
+        val challengeToken = captchaSessionToken
+        // Keyed on the mode: entering or leaving the manual
+        // verification step rebuilds the screen with a fresh
+        // WebView (the factory loads startUrl only once), pointed
+        // at the Firefox host that serves the challenge.
+        key(challengeToken != null) {
+            BrowserLoginScreen(
+                startUrl = if (challengeToken != null) {
+                    "https://accounts.firefox.com/"
+                } else {
+                    browserStartUrl!!
+                },
+                busy = completingBrowserLogin,
+                errorMessage = errorMessage,
+                onSessionCaptured = ::handleBrowserSession,
+                onCanceled = {
+                    browserStartUrl = null
+                    completingBrowserLogin = false
+                    errorMessage = null
+                    captchaSessionToken = null
+                    captchaRetryUsed = false
+                },
+                onOpenLogs = onOpenLogs,
+                challengeToken = challengeToken,
+                onChallengePassed = {
+                    val token = captchaSessionToken
+                    captchaSessionToken = null
+                    if (token != null) {
+                        scope.launch {
+                            // Move whatever clearance the browser
+                            // earned during the manual check into the
+                            // native jar BEFORE the one retry, so the
+                            // exchange carries it (the v1.0.35 logs
+                            // show exactly what the retry sends).
+                            runCatching { authRepository.harvestWebViewCookies() }
+                                .onFailure {
+                                    AppLogger.w("LoginScreen", "WebView cookie harvest failed", it)
+                                }
+                            handleBrowserSession(token, null)
+                        }
+                    }
+                },
+                exchangeToken = { token, webView, bridge ->
+                    runTokenExchangeWithClearance(
+                        webView,
+                        bridge,
+                        authRepository.buildBrowserTokenRequest(token),
+                    )
+                },
+            )
+        }
         return
     }
 
@@ -249,6 +303,8 @@ fun LoginScreen(
                 onClick = {
                     errorMessage = null
                     infoMessage = null
+                    captchaSessionToken = null
+                    captchaRetryUsed = false
                     browserStartUrl = authRepository.getBrowserLoginUrl()
                 },
                 colors = ButtonDefaults.buttonColors(

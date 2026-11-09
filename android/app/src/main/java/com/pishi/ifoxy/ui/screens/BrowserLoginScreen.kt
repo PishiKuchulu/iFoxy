@@ -423,6 +423,11 @@ internal suspend fun runTokenExchangeInPage(
 private const val CHALLENGE_CLEARANCE_DEADLINE_MS = 75_000L
 private const val CHALLENGE_CLEARANCE_POLL_MS = 5_000L
 
+/** How long the manual verification step (v1.0.36) watches the
+ *  accounts page for the user to pass Mozilla's CAPTCHA before it
+ *  stops auto-detecting; the Continue button remains after that. */
+private const val MANUAL_CHALLENGE_TIMEOUT_MS = 180_000L
+
 /** The in-page exchange with bot-protection recovery. On 2026-11-06
  *  the plain in-page fetch itself started returning HTTP 406 on a
  *  flagged network: the fetch sends no cookies and cannot execute
@@ -495,6 +500,33 @@ internal suspend fun runTokenExchangeWithClearance(
     return null
 }
 
+/** Whether the page currently shown in [webView] still looks like a
+ *  Fastly client-challenge page, mirroring the markers the native
+ *  solver's isChallengePage requires (an /_fs-ch- prefix plus one
+ *  of the challenge markers). Used by the manual verification step
+ *  (v1.0.36) to notice when the user has passed Mozilla's CAPTCHA:
+ *  once the check passes, Fastly replaces the challenge page with
+ *  the real Firefox page and the markers are gone. */
+internal suspend fun webViewShowsFastlyChallenge(webView: WebView): Boolean {
+    val script = "(function(){" +
+        "var h=document.documentElement?document.documentElement.outerHTML:'';" +
+        "if(h.indexOf('/_fs-ch-')===-1)return false;" +
+        "var l=h.toLowerCase();" +
+        "return l.indexOf('client challenge')!==-1||h.indexOf('fst-post-back')!==-1||" +
+        "h.indexOf('script.js')!==-1;" +
+        "})()"
+    val result = suspendCancellableCoroutine<String?> { cont ->
+        webView.post {
+            runCatching {
+                webView.evaluateJavascript(script) { value ->
+                    if (cont.isActive) cont.resume(value)
+                }
+            }.onFailure { if (cont.isActive) cont.resume(null) }
+        }
+    }
+    return result?.trim()?.trim('"') == "true"
+}
+
 @Composable
 internal fun BrowserLoginScreen(
     startUrl: String,
@@ -503,6 +535,15 @@ internal fun BrowserLoginScreen(
     onSessionCaptured: (String, JSONObject?) -> Unit,
     onCanceled: () -> Unit,
     onOpenLogs: () -> Unit = {},
+    /** Session token whose native exchange died on an interactive
+     *  CAPTCHA. When non-null the screen is the manual verification
+     *  step (v1.0.36): the WebView shows the Firefox host that
+     *  serves the challenge so the user can pass it by hand, and
+     *  [onChallengePassed] fires when the check is seen to pass (or
+     *  the user taps Continue) so the caller can harvest the
+     *  browser's cookies and retry the exchange once. */
+    challengeToken: String? = null,
+    onChallengePassed: () -> Unit = {},
     exchangeToken: (suspend (String, WebView, WebChannelBridge) -> JSONObject?)? = null,
 ) {
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
@@ -517,8 +558,19 @@ internal fun BrowserLoginScreen(
     val currentOnSession by rememberUpdatedState(onSessionCaptured)
     val currentOnCanceled by rememberUpdatedState(onCanceled)
     val currentExchange by rememberUpdatedState(exchangeToken)
+    val currentOnChallengePassed by rememberUpdatedState(onChallengePassed)
+    // Manual verification step state (v1.0.36): the WebView is
+    // showing the Firefox page for the check, not a sign-in form.
+    val inChallengeMode = challengeToken != null
+    var challengeContinueFired by remember { mutableStateOf(false) }
     var exchanging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun fireChallengePassed() {
+        if (challengeContinueFired) return
+        challengeContinueFired = true
+        currentOnChallengePassed()
+    }
 
     // The FxA page carries the user's password / verification code:
     // keep it out of screenshots and the Recents thumbnail while this
@@ -565,6 +617,41 @@ internal fun BrowserLoginScreen(
         if (errorMessage != null) exchanging = false
     }
 
+    // Manual verification watch (v1.0.36): while the challenge step
+    // is up, poll the accounts page the WebView is showing; once a
+    // finished load there is no longer a challenge page, the user
+    // has passed and sign-in continues. Auto-detection stops at the
+    // deadline — the Continue button below remains as the fallback.
+    LaunchedEffect(challengeToken) {
+        if (challengeToken == null) return@LaunchedEffect
+        val deadline = System.currentTimeMillis() + MANUAL_CHALLENGE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            delay(CHALLENGE_CLEARANCE_POLL_MS)
+            val webView = webViewInstance ?: continue
+            val host = webView.url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+            if (host != "accounts.firefox.com" || !pageLoaded) continue
+            val stillChallenged =
+                withTimeoutOrNull(5_000) { webViewShowsFastlyChallenge(webView) } ?: true
+            AppLogger.i(
+                "BrowserLoginScreen",
+                "manual verification poll: accounts page still challenged=$stillChallenged",
+            )
+            if (!stillChallenged) {
+                AppLogger.i(
+                    "BrowserLoginScreen",
+                    "manual Fastly verification passed; continuing sign-in",
+                )
+                fireChallengePassed()
+                return@LaunchedEffect
+            }
+        }
+        AppLogger.w(
+            "BrowserLoginScreen",
+            "manual Fastly verification was not confirmed automatically; " +
+                "the Continue button remains available",
+        )
+    }
+
     BackHandler(enabled = true) {
         if (webViewInstance?.canGoBack() == true) {
             webViewInstance?.goBack()
@@ -574,6 +661,10 @@ internal fun BrowserLoginScreen(
     }
 
     fun handleSession(token: String) {
+        // Manual verification step: the page context is the
+        // challenge, not a sign-in — a WebChannel session message
+        // here must not start another exchange.
+        if (inChallengeMode) return
         if (busy || exchanging) return
         val exchange = currentExchange
         val view = webViewInstance
@@ -689,6 +780,59 @@ internal fun BrowserLoginScreen(
                 color = IFoxyYellow,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+        if (inChallengeMode) {
+            // Manual verification step (v1.0.36): the WebView below
+            // is showing Mozilla's page so the user can pass the
+            // CAPTCHA its bot protection demanded. The watch above
+            // continues sign-in by itself once the check passes;
+            // Continue is the manual fallback.
+            Text(
+                "Mozilla's bot protection needs a human check",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.5.sp,
+                ),
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            Text(
+                "Complete the verification on the Firefox page below. iFoxy retries " +
+                    "your sign-in automatically once the check passes — or tap " +
+                    "Continue when the page has finished loading.",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.5.sp,
+                ),
+                color = Color.White.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+            )
+            TextButton(
+                onClick = {
+                    AppLogger.i(
+                        "BrowserLoginScreen",
+                        "manual Fastly verification continued by the user",
+                    )
+                    fireChallengePassed()
+                },
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
+                Text(
+                    "Continue",
+                    color = IFoxyYellow,
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.5.sp,
+                    ),
+                )
+            }
         }
         if (errorMessage != null) {
             Text(
