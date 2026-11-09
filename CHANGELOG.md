@@ -1,5 +1,17 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.34 combined release - upstream Fastly solver port (Android)
+
+Android-focused fix (desktop unchanged, still 0.2.3): the native
+Fastly challenge solver is ported to upstream FoxyVPN v2.0.2's
+design, the browser sign-in clearance flow no longer aborts on a
+"no answer" exchange outcome, and the token refresh grant falls
+back to the second token host when bot protection blocks the
+first.
+
+Android 1.0.34 (versionCode 71): see android/CHANGELOG.md.
+Supersedes v1.0.33.
+
 ## v1.0.33 combined release - external-audit fix wave (desktop and Android)
 
 Fixes every confirmed defect from the verified external audit of
