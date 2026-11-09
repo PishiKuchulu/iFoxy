@@ -73,6 +73,15 @@ class FxaRefreshFailure(
 internal fun Throwable.isBotProtectionBlock(): Boolean =
     generateSequence(this) { it.cause }.take(8).any { it is FastlyBlockedException }
 
+/** True when this failure chain contains a Fastly challenge that
+ *  demands an interactive CAPTCHA — the one solve failure a human
+ *  can clear by hand in a real browser (see the manual
+ *  verification step in the browser sign-in flow). Carried
+ *  end-to-end by TYPE via [FastlyCaptchaException]; never inferred
+ *  from message text. */
+internal fun Throwable.isCaptchaChallenge(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is FastlyCaptchaException }
+
 /** Whether a failed refresh-token grant may be retried against the
  *  alternate FxA host (upstream v2.0.2's refresh design): ONLY a
  *  bot-protection block justifies the second attempt — Fastly fronts
@@ -144,6 +153,15 @@ class FxaAuthRepository(
 
     /** The official FxA page the in-app browser sign-in starts from. */
     fun getBrowserLoginUrl(): String = WEBCHANNEL_LOGIN_URL
+
+    /** Copies the cookies the sign-in WebView currently holds for
+     *  the FxA hosts into the shared native cookie jar. Used by the
+     *  manual Fastly verification step (v1.0.36): the user passes
+     *  Mozilla's CAPTCHA in the browser, then the native token
+     *  exchange is retried carrying whatever clearance the browser
+     *  earned. */
+    fun harvestWebViewCookies(): Int =
+        harvestWebViewCookiesIntoJar(ControlPlaneHttp.cookieJar)
 
     /**
      * Finish a browser sign-in. The WebChannel bridge captured the

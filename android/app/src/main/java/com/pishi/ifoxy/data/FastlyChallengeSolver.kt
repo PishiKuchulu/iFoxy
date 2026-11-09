@@ -16,7 +16,15 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
-class FastlyChallengeError(message: String) : Exception(message)
+open class FastlyChallengeError(message: String) : Exception(message)
+
+/** The challenge set Fastly served demands an interactive CAPTCHA:
+ *  no native code can answer it — only a human in a real browser
+ *  can. A distinct TYPE (never a message convention) so the
+ *  sign-in UI can offer the manual verification step for exactly
+ *  this failure and no other. It stays a [FastlyChallengeError], so
+ *  every existing catch site keeps its current behaviour. */
+class FastlyCaptchaException(message: String) : FastlyChallengeError(message)
 
 private const val TAG = "FastlyChallengeSolver"
 
@@ -351,7 +359,7 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
                 put("auth", fetchPat(client, prefixUrl, token, userAgent))
             }
             "clientmetrics" -> clientMetricsAnswer()
-            "captcha" -> throw FastlyChallengeError(
+            "captcha" -> throw FastlyCaptchaException(
                 "Firefox Accounts requires a CAPTCHA. Sign in again to continue."
             )
             else -> throw FastlyChallengeError("unsupported Fastly challenge type '$type'")
@@ -521,4 +529,56 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
             .connectTimeout(SOLVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(SOLVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
+}
+
+/** Splits a CookieManager cookie string ("name=value; name=value")
+ *  into its pairs. Only the FIRST '=' splits, so values may
+ *  themselves contain '='; fragments without a name, without an
+ *  '=', or with a blank value are dropped — CookieManager can
+ *  surface valueless or cleared leftovers that are not usable
+ *  cookies. Pure, so the harvest parsing is unit-testable. */
+internal fun parseWebViewCookieHeader(header: String?): List<Pair<String, String>> {
+    if (header.isNullOrBlank()) return emptyList()
+    return header.split(';').mapNotNull { fragment ->
+        val eq = fragment.indexOf('=')
+        if (eq <= 0) return@mapNotNull null
+        val name = fragment.substring(0, eq).trim()
+        val value = fragment.substring(eq + 1).trim()
+        if (name.isEmpty() || value.isEmpty()) return@mapNotNull null
+        name to value
+    }
+}
+
+/** Copies every cookie the sign-in WebView holds for the FxA hosts
+ *  into the native shared jar — the harvest half of the manual
+ *  verification step (v1.0.36): the user passes Mozilla's CAPTCHA
+ *  in the real browser, and this moves whatever Fastly cookies
+ *  that pass earned into the jar the native token exchange
+ *  retries with. Installation mirrors the solver's own
+ *  installChallengeCookies: each cookie lands under the host it
+ *  was read from plus one copy per CLEARANCE_COOKIE_HOSTS entry,
+ *  never a blanket firefox.com domain cookie. Cookie VALUES are
+ *  never logged — names, source host, target domains and value
+ *  length only, like the solver's install logging. Returns how
+ *  many cookies were installed. */
+internal fun harvestWebViewCookiesIntoJar(cookieJar: SimpleCookieJar): Int {
+    val manager = runCatching { CookieManager.getInstance() }.getOrNull() ?: return 0
+    var installed = 0
+    for (host in CLEARANCE_COOKIE_HOSTS) {
+        val header = runCatching { manager.getCookie("https://$host/") }.getOrNull()
+        for ((name, value) in parseWebViewCookieHeader(header)) {
+            val targets = (listOf(host) + CLEARANCE_COOKIE_HOSTS).distinct()
+            for (domain in targets) {
+                cookieJar.set(name, value, domain)
+            }
+            installed++
+            AppLogger.i(
+                TAG,
+                "harvested WebView cookie '$name' from $host for domains $targets " +
+                    "(value length ${value.length})",
+            )
+        }
+    }
+    AppLogger.i(TAG, "WebView cookie harvest installed $installed cookie(s) into the shared jar")
+    return installed
 }

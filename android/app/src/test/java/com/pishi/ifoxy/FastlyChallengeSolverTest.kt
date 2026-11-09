@@ -1,8 +1,10 @@
 package com.pishi.ifoxy
 
+import com.pishi.ifoxy.data.FastlyCaptchaException
 import com.pishi.ifoxy.data.FastlyChallengeError
 import com.pishi.ifoxy.data.FastlyChallengeSolver
 import com.pishi.ifoxy.data.SimpleCookieJar
+import com.pishi.ifoxy.data.parseWebViewCookieHeader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -135,5 +137,50 @@ class FastlyChallengeSolverTest {
         sharedJar.set("clearance", "secret-value", "api.accounts.firefox.com")
         val solverWithSharedCookies = FastlyChallengeSolver(sharedJar)
         assertTrue(solverWithSharedCookies.newSolverJar().snapshotAll().isEmpty())
+    }
+
+    // --- CAPTCHA failure type (v1.0.36) ---
+
+    @Test
+    fun `the captcha failure is a challenge error`() {
+        // Existing catch sites handle FastlyChallengeError; the
+        // typed CAPTCHA failure must stay inside that family so
+        // only the code that explicitly looks for it (the manual
+        // verification step) changes behaviour.
+        val failure: Exception = FastlyCaptchaException("captcha")
+        assertTrue(failure is FastlyChallengeError)
+    }
+
+    // --- WebView cookie harvest parsing (v1.0.36) ---
+
+    @Test
+    fun `cookie header parses into name value pairs`() {
+        assertEquals(
+            listOf("a" to "1", "b" to "2", "c" to "3"),
+            parseWebViewCookieHeader("a=1; b=2; c=3"),
+        )
+    }
+
+    @Test
+    fun `cookie header tolerates whitespace and values containing equals signs`() {
+        assertEquals(
+            listOf("tok" to "abc=def==", "x" to "y"),
+            parseWebViewCookieHeader("  tok = abc=def== ;  x=y "),
+        )
+    }
+
+    @Test
+    fun `cookie header drops fragments without a name equals sign or value`() {
+        assertEquals(
+            listOf("a" to "1"),
+            parseWebViewCookieHeader("a=1; lonely; =orphan; ; b="),
+        )
+    }
+
+    @Test
+    fun `empty cookie headers parse to no pairs`() {
+        assertEquals(emptyList<Pair<String, String>>(), parseWebViewCookieHeader(null))
+        assertEquals(emptyList<Pair<String, String>>(), parseWebViewCookieHeader(""))
+        assertEquals(emptyList<Pair<String, String>>(), parseWebViewCookieHeader("   "))
     }
 }
