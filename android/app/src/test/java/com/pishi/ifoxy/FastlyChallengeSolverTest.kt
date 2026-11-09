@@ -121,4 +121,19 @@ class FastlyChallengeSolverTest {
         // 16 bytes is not a SHA-256 digest.
         assertNull(solver.solvePow("base", "00".repeat(16)))
     }
+
+    // --- solver working jar (v1.0.35) ---
+
+    @Test
+    fun `the solver working jar starts empty even when the shared jar holds cookies`() {
+        // Upstream parity, and the v1.0.34 on-device failure: a
+        // seeded working jar made the next solve's probes present
+        // the freshly earned clearance, so they were served plain
+        // pages and the solve aborted with "host did not serve a
+        // Fastly challenge page".
+        val sharedJar = SimpleCookieJar()
+        sharedJar.set("clearance", "secret-value", "api.accounts.firefox.com")
+        val solverWithSharedCookies = FastlyChallengeSolver(sharedJar)
+        assertTrue(solverWithSharedCookies.newSolverJar().snapshotAll().isEmpty())
+    }
 }
