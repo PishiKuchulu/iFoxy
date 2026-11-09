@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.35 (versionCode 72) - Fastly solver diagnostic
+
+- Diagnostic release for the sign-in block that survived
+  1.0.34 on the owner's network. The solver's working cookie
+  jar now starts EMPTY at the start of every solve, exactly
+  like upstream FoxyVPN v2.0.2: 1.0.34 seeded it with the
+  shared jar's cookies, so once a first solve had earned a
+  clearance, the next solve's probes presented that clearance
+  and were served plain pages instead of a challenge page —
+  the solve aborted with "host did not serve a Fastly
+  challenge page". Cookies a solve earns are still installed
+  into the shared jar (and mirrored to the WebView) exactly
+  as before.
+- Full Fastly acquisition logging, names and metadata only
+  (never cookie values or token material): every probe logs
+  its host, HTTP status, body length, a body head and whether
+  it was a challenge page, and a probe that dies in transport
+  logs the exception instead of silently looking like a plain
+  page; a successful solve logs its winning host/user-agent
+  pair and how many post-back rounds it took; installing
+  clearance logs each cookie's name and target domains; and
+  the FxA retry after a solve logs the user agent it sends
+  and the names of the cookies the shared jar attaches for
+  the retried URL — so the next on-device log can show whether
+  the earned clearance ever reached the retried token POST,
+  and under which user agent it was earned versus sent.
+
 ## 1.0.34 (versionCode 71) - upstream Fastly solver port
 
 - The native Fastly challenge solver now follows upstream
