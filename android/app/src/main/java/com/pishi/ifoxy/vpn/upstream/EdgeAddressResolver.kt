@@ -2,6 +2,7 @@ package com.pishi.ifoxy.vpn.upstream
 
 import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.ControlPlaneHttp
+import com.pishi.ifoxy.data.SettingsStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -53,7 +54,15 @@ private const val FAILURE_BACKOFF_MS = 30 * 60_000L
 
 internal object EdgeAddressResolver {
 
-    private class CacheEntry(val addresses: List<String>, val resolvedAtMs: Long)
+    /** The cache stores the two families separately: the ORDER
+     *  they are dialed in is a function of the caller's
+     *  [SettingsStore.IpVersionMode], which can change between
+     *  connects while the cached resolution is still fresh. */
+    private class CacheEntry(
+        val v4Addresses: List<String>,
+        val v6Addresses: List<String>,
+        val resolvedAtMs: Long,
+    )
 
     private val cache = ConcurrentHashMap<String, CacheEntry>()
 
@@ -67,19 +76,31 @@ internal object EdgeAddressResolver {
             .build()
     }
 
-    suspend fun resolve(hostname: String, endpointAddresses: List<String>): String? {
-        if (endpointAddresses.isEmpty()) return null
+    /** Resolves [hostname] over DNS-over-HTTPS and returns the
+     *  addresses ORDERED for dialing under [mode] (see
+     *  [orderEdgeAddresses]); an empty list means no usable
+     *  addresses were obtained and the caller falls back to the
+     *  mode-ordered system resolver. Both families are always
+     *  fetched — the pre-1.0.37 resolver returned the A set alone
+     *  whenever it was non-empty, which made every IPv6 mode a
+     *  no-op. */
+    suspend fun resolve(
+        hostname: String,
+        endpointAddresses: List<String>,
+        mode: SettingsStore.IpVersionMode,
+    ): List<String> {
+        if (endpointAddresses.isEmpty()) return emptyList()
 
         val host = hostname.trim().lowercase()
-        if (host.isEmpty()) return null
+        if (host.isEmpty()) return emptyList()
 
-        if (host.any { it.code >= ASCII_LIMIT }) return null
+        if (host.any { it.code >= ASCII_LIMIT }) return emptyList()
 
-        if (isAddressLiteral(host)) return null
+        if (isAddressLiteral(host)) return emptyList()
 
         cache[host]?.let { cached ->
             if (System.currentTimeMillis() - cached.resolvedAtMs < CACHE_TTL_MS) {
-                return cached.addresses.firstOrNull()
+                return orderEdgeAddresses(cached.v4Addresses, cached.v6Addresses, mode)
             }
         }
 
@@ -90,45 +111,51 @@ internal object EdgeAddressResolver {
         if (endpoints.isEmpty()) {
 
             AppLogger.d(TAG, "skipping DNS-over-HTTPS for $host; every configured endpoint is in backoff")
-            return null
+            return emptyList()
         }
 
-        val addresses = queryEndpoints(host, endpoints)
-        if (addresses.isEmpty()) {
+        val (v4Addresses, v6Addresses) = queryEndpoints(host, endpoints)
+        if (v4Addresses.isEmpty() && v6Addresses.isEmpty()) {
             AppLogger.i(
                 TAG,
                 "could not resolve $host over DNS-over-HTTPS (tried ${endpoints.size} endpoint(s)); " +
-                    "dialling by hostname via the system resolver",
+                    "falling back to the system resolver",
             )
-            return null
+            return emptyList()
         }
-        cache[host] = CacheEntry(addresses, System.currentTimeMillis())
-        return addresses.first()
+        cache[host] = CacheEntry(v4Addresses, v6Addresses, System.currentTimeMillis())
+        return orderEdgeAddresses(v4Addresses, v6Addresses, mode)
     }
 
     fun invalidate() {
         cache.clear()
     }
 
-    private suspend fun queryEndpoints(host: String, endpoints: List<String>): List<String> = coroutineScope {
-        val queryV4 = buildQuery(host, DNS_TYPE_A) ?: return@coroutineScope emptyList()
-        val queryV6 = buildQuery(host, DNS_TYPE_AAAA) ?: return@coroutineScope emptyList()
+    /** Races the endpoints as before (first endpoint answering with
+     *  at least one address in either family wins), but an attempt
+     *  now yields BOTH families from that endpoint. */
+    private suspend fun queryEndpoints(
+        host: String,
+        endpoints: List<String>,
+    ): Pair<List<String>, List<String>> = coroutineScope {
+        val queryV4 = buildQuery(host, DNS_TYPE_A) ?: return@coroutineScope emptyList<String>() to emptyList<String>()
+        val queryV6 = buildQuery(host, DNS_TYPE_AAAA) ?: return@coroutineScope emptyList<String>() to emptyList<String>()
 
         val inFlight = ConcurrentHashMap<String, Call>()
 
-        val winner = CompletableDeferred<Pair<String, List<String>>?>()
+        val winner = CompletableDeferred<Pair<String, Pair<List<String>, List<String>>>?>()
         val outstanding = AtomicInteger(endpoints.size)
 
         val attempts = endpoints.map { endpoint ->
             launch(Dispatchers.IO) {
-                val addresses = queryOne(endpoint, queryV4, queryV6, inFlight)
-                if (addresses == null) {
+                val families = queryOne(endpoint, queryV4, queryV6, inFlight)
+                if (families == null) {
 
                     suppressedUntilMs[endpoint] = System.currentTimeMillis() + FAILURE_BACKOFF_MS
-                } else if (addresses.isNotEmpty()) {
+                } else if (families.first.isNotEmpty() || families.second.isNotEmpty()) {
                     suppressedUntilMs.remove(endpoint)
 
-                    winner.complete(endpoint to addresses)
+                    winner.complete(endpoint to families)
                     return@launch
                 }
 
@@ -139,14 +166,15 @@ internal object EdgeAddressResolver {
         try {
             val result = winner.await()
             if (result == null) {
-                emptyList()
+                emptyList<String>() to emptyList<String>()
             } else {
-                val (endpoint, addresses) = result
+                val (endpoint, families) = result
                 AppLogger.d(
                     TAG,
-                    "resolved $host over DNS-over-HTTPS via $endpoint (${addresses.size} address(es))",
+                    "resolved $host over DNS-over-HTTPS via $endpoint " +
+                        "(${families.first.size} IPv4 + ${families.second.size} IPv6 address(es))",
                 )
-                addresses
+                families
             }
         } finally {
 
@@ -155,21 +183,27 @@ internal object EdgeAddressResolver {
         }
     }
 
+    /** One endpoint's answer: (A list, AAAA list), or null when the
+     *  endpoint itself is unusable (its A query failed in
+     *  transport — the failure that earns the 30-minute backoff).
+     *  Both families are queried unconditionally; an AAAA transport
+     *  failure degrades to an empty IPv6 set, mirroring the old
+     *  fallback behaviour. */
     private fun queryOne(
         endpoint: String,
         queryV4: ByteArray,
         queryV6: ByteArray,
         inFlight: ConcurrentHashMap<String, Call>,
-    ): List<String>? {
+    ): Pair<List<String>, List<String>>? {
         val v4Response = runCatching { post(endpoint, queryV4, inFlight) }.getOrElse { throwable ->
             AppLogger.d(TAG, "DoH endpoint $endpoint unusable: ${throwable.message}")
             return null
         }
         val v4 = parseAddresses(v4Response, DNS_TYPE_A)
-        if (v4.isNotEmpty()) return v4
 
-        val v6Response = runCatching { post(endpoint, queryV6, inFlight) }.getOrNull() ?: return emptyList()
-        return parseAddresses(v6Response, DNS_TYPE_AAAA)
+        val v6Response = runCatching { post(endpoint, queryV6, inFlight) }.getOrNull()
+        val v6 = if (v6Response != null) parseAddresses(v6Response, DNS_TYPE_AAAA) else emptyList()
+        return v4 to v6
     }
 
     private fun post(endpoint: String, query: ByteArray, inFlight: ConcurrentHashMap<String, Call>): ByteArray {
@@ -201,6 +235,25 @@ internal object EdgeAddressResolver {
         val authority = if (host.contains(':')) "[$host]" else host
         return "https://$authority$DOH_PATH"
     }
+}
+
+/** Orders/filters a resolved (A, AAAA) pair into the dial order
+ *  for [mode] — the single source of truth every resolution path
+ *  (DoH, system fallback, cache) shapes its result with. Pure:
+ *  unit-tested for all five modes. DUAL_STACK keeps both families
+ *  (list order is irrelevant there — the session races the first
+ *  address of each family). */
+internal fun orderEdgeAddresses(
+    v4Addresses: List<String>,
+    v6Addresses: List<String>,
+    mode: SettingsStore.IpVersionMode,
+): List<String> = when (mode) {
+    SettingsStore.IpVersionMode.AUTO,
+    SettingsStore.IpVersionMode.DUAL_STACK,
+    -> v4Addresses + v6Addresses
+    SettingsStore.IpVersionMode.IPV6_FIRST -> v6Addresses + v4Addresses
+    SettingsStore.IpVersionMode.IPV4_ONLY -> v4Addresses
+    SettingsStore.IpVersionMode.IPV6_ONLY -> v6Addresses
 }
 
 private fun buildQuery(hostname: String, type: Int): ByteArray? {
