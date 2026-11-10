@@ -216,6 +216,18 @@ internal class WebChannelBridge(
     var pendingSessionToken: String? = null
         private set
 
+    /** True while the token parked here is still UNVERIFIED —
+     *  the page has not completed its own confirmation step
+     *  (email code / TOTP) for it yet, so the session is awaiting
+     *  page-side confirmation. The clearance flow consults this
+     *  before navigating the WebView to the API host: replacing
+     *  the page while it holds an unconfirmed session would
+     *  destroy the only surface where the user can finish
+     *  confirming it. Cleared whenever a token is released. */
+    @Volatile
+    var hasUnverifiedParkedSession: Boolean = false
+        private set
+
     @JavascriptInterface
     fun onSessionVerified() {
         val token = pendingSessionToken ?: return
@@ -269,6 +281,7 @@ internal class WebChannelBridge(
                     // the token stays pending until the page proves
                     // the session (verify/TOTP completion hooks).
                     val isVerified = data.optBoolean("verified", false)
+                    hasUnverifiedParkedSession = !isVerified
                     if (isVerified) {
                         notifySessionToken(token)
                     }
@@ -296,6 +309,7 @@ internal class WebChannelBridge(
 
     fun notifySessionToken(token: String) {
         if (!SESSION_TOKEN_HEX.matches(token)) return
+        hasUnverifiedParkedSession = false
         val view = webViewRef.get()
         if (view != null) {
             view.post { onSessionToken(token) }
@@ -466,6 +480,24 @@ internal suspend fun runTokenExchangeWithClearance(
     if (withCookies.tokenJson != null) return withCookies.tokenJson
     if (isTerminalExchangeOutcome(withCookies)) return null
 
+    if (bridge.hasUnverifiedParkedSession) {
+        // The page still holds an UNVERIFIED session token: it is
+        // waiting for Mozilla's own confirmation step (email code
+        // / TOTP) to be finished ON THAT PAGE. Navigating the
+        // WebView to the API host would replace the page and
+        // destroy the only place the code can be entered, so skip
+        // the navigation recovery entirely (v1.0.38): the native
+        // exchange's verdict — errno 104 for an unconfirmed
+        // session — opens the waiting-for-confirmation mode on
+        // the sign-in page instead.
+        AppLogger.w(
+            "BrowserLoginScreen",
+            "skipping the API-host navigation: the page holds an " +
+                "unverified session awaiting on-page confirmation",
+        )
+        return null
+    }
+
     val apiOrigin = apiOriginOf(spec.url) ?: return null
     AppLogger.i(
         "BrowserLoginScreen",
@@ -544,6 +576,19 @@ internal fun BrowserLoginScreen(
      *  browser's cookies and retry the exchange once. */
     challengeToken: String? = null,
     onChallengePassed: () -> Unit = {},
+    /** Session token whose native exchange FxA refused with
+     *  errno 104 "Unconfirmed session". When non-null the screen
+     *  is the waiting-for-email-confirmation mode (v1.0.38): the
+     *  WebView shows Mozilla's sign-in page so the user can enter
+     *  the emailed confirmation code there (iFoxy never sees the
+     *  code), and [onConfirmationPassed] fires when the page's
+     *  verification hooks report the session confirmed — or when
+     *  the user taps Continue — so the caller can retry the
+     *  exchange with the kept token. The callback's argument is
+     *  true for a manual Continue tap, false for an automatic
+     *  page-side detection. */
+    unconfirmedToken: String? = null,
+    onConfirmationPassed: (manual: Boolean) -> Unit = {},
     exchangeToken: (suspend (String, WebView, WebChannelBridge) -> JSONObject?)? = null,
 ) {
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
@@ -563,6 +608,12 @@ internal fun BrowserLoginScreen(
     // showing the Firefox page for the check, not a sign-in form.
     val inChallengeMode = challengeToken != null
     var challengeContinueFired by remember { mutableStateOf(false) }
+    val currentOnConfirmationPassed by rememberUpdatedState(onConfirmationPassed)
+    // Waiting-for-confirmation state (v1.0.38): the WebView is
+    // showing Mozilla's sign-in page so the emailed confirmation
+    // code can be entered on it.
+    val inUnconfirmedMode = unconfirmedToken != null
+    var confirmationAutoFired by remember { mutableStateOf(false) }
     var exchanging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -570,6 +621,19 @@ internal fun BrowserLoginScreen(
         if (challengeContinueFired) return
         challengeContinueFired = true
         currentOnChallengePassed()
+    }
+
+    fun fireConfirmationPassed(manual: Boolean) {
+        // Automatic (page-hook) signals fire at most once: the
+        // page can report verification repeatedly, and the caller
+        // gives the mode a single automatic retry. Manual Continue
+        // taps always go through — re-attempting is the user's
+        // own call.
+        if (!manual) {
+            if (confirmationAutoFired) return
+            confirmationAutoFired = true
+        }
+        currentOnConfirmationPassed(manual)
     }
 
     // The FxA page carries the user's password / verification code:
@@ -652,6 +716,38 @@ internal fun BrowserLoginScreen(
         )
     }
 
+    // Waiting-for-confirmation watch (v1.0.38): the page-side
+    // verify hooks release the bridge's parked token into
+    // handleSession, which routes it to the confirmation
+    // callback — but this mode rebuilds the screen with a fresh
+    // WebView whose bridge may hold no parked token for the hooks
+    // to release (the page can resume the session from its own
+    // storage after the code is entered). Watch the URL for the
+    // same success markers the WebViewClient checks so a
+    // completed confirmation is still noticed; the Continue
+    // button below remains as the fallback.
+    LaunchedEffect(unconfirmedToken) {
+        if (unconfirmedToken == null) return@LaunchedEffect
+        val deadline = System.currentTimeMillis() + MANUAL_CHALLENGE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            delay(CHALLENGE_CLEARANCE_POLL_MS)
+            val webView = webViewInstance ?: continue
+            if (isSuccessUrl(webView.url)) {
+                AppLogger.i(
+                    "BrowserLoginScreen",
+                    "email confirmation completed on Mozilla's page; continuing sign-in",
+                )
+                fireConfirmationPassed(manual = false)
+                return@LaunchedEffect
+            }
+        }
+        AppLogger.w(
+            "BrowserLoginScreen",
+            "email confirmation was not confirmed automatically; " +
+                "the Continue button remains available",
+        )
+    }
+
     BackHandler(enabled = true) {
         if (webViewInstance?.canGoBack() == true) {
             webViewInstance?.goBack()
@@ -665,6 +761,21 @@ internal fun BrowserLoginScreen(
         // challenge, not a sign-in — a WebChannel session message
         // here must not start another exchange.
         if (inChallengeMode) return
+        if (inUnconfirmedMode) {
+            // Waiting for email confirmation: the page reporting a
+            // session here is the confirmation signal, not the
+            // start of a competing exchange. The KEPT token routes
+            // to the caller's confirmation callback (which retries
+            // it); a DIFFERENT token means the user signed in
+            // afresh on the page — hand it over as a normal
+            // capture so the caller can complete that sign-in.
+            if (token == unconfirmedToken) {
+                fireConfirmationPassed(manual = false)
+            } else {
+                currentOnSession(token, null)
+            }
+            return
+        }
         if (busy || exchanging) return
         val exchange = currentExchange
         val view = webViewInstance
@@ -820,6 +931,62 @@ internal fun BrowserLoginScreen(
                         "manual Fastly verification continued by the user",
                     )
                     fireChallengePassed()
+                },
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
+                Text(
+                    "Continue",
+                    color = IFoxyYellow,
+                    style = TextStyle(
+                        fontFamily = PoppinsFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.5.sp,
+                    ),
+                )
+            }
+        }
+        if (inUnconfirmedMode) {
+            // Waiting for email confirmation (v1.0.38): Mozilla
+            // emailed a confirmation code and the session cannot be
+            // exchanged until it is entered. The WebView below
+            // shows Mozilla's page so the code is entered there —
+            // iFoxy never sees it. The watch above continues
+            // sign-in by itself once the confirmation lands;
+            // Continue is the manual fallback.
+            Text(
+                "Mozilla emailed you a confirmation code",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.5.sp,
+                ),
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            Text(
+                "Enter the code on the Firefox page below to confirm this " +
+                    "sign-in. iFoxy retries your sign-in automatically once " +
+                    "the confirmation completes — or tap Continue after " +
+                    "entering the code.",
+                style = TextStyle(
+                    fontFamily = PoppinsFamily,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.5.sp,
+                ),
+                color = Color.White.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+            )
+            TextButton(
+                onClick = {
+                    AppLogger.i(
+                        "BrowserLoginScreen",
+                        "email confirmation continued by the user",
+                    )
+                    fireConfirmationPassed(manual = true)
                 },
                 modifier = Modifier.padding(horizontal = 8.dp),
             ) {
