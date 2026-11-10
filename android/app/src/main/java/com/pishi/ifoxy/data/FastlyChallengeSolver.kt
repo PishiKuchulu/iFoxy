@@ -146,9 +146,12 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
                 try {
                     if (solveChallengeOnHost(base, userAgent)) return
                 } catch (e: FastlyChallengeError) {
-                    lastError = e
+                    lastError = preferredProbeError(lastError, e)
                 } catch (e: Exception) {
-                    lastError = FastlyChallengeError("Error probing $base: ${e.message}")
+                    lastError = preferredProbeError(
+                        lastError,
+                        FastlyChallengeError("Error probing $base: ${e.message}"),
+                    )
                 }
             }
         }
@@ -529,6 +532,23 @@ class FastlyChallengeSolver(private val cookieJar: SimpleCookieJar) {
             .connectTimeout(SOLVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(SOLVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
+}
+
+/** Which probe failure [FastlyChallengeSolver.solve] keeps as its
+ *  lastError: a CAPTCHA verdict is the one outcome the sign-in UI
+ *  can act on (present the manual verification step), so once any
+ *  probe has captured one, a later probe's ordinary failure must
+ *  not overwrite it — otherwise whether the user is offered the
+ *  step depends on probe order. A newer CAPTCHA replaces an older
+ *  non-CAPTCHA; between two ordinary failures the newest wins, as
+ *  before. Pure, so the preference is unit-testable. */
+internal fun preferredProbeError(
+    current: FastlyChallengeError?,
+    candidate: FastlyChallengeError,
+): FastlyChallengeError = when {
+    candidate is FastlyCaptchaException -> candidate
+    current is FastlyCaptchaException -> current
+    else -> candidate
 }
 
 /** Splits a CookieManager cookie string ("name=value; name=value")

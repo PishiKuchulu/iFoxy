@@ -50,12 +50,14 @@ import io.netty.handler.ssl.SslProvider
 import io.netty.handler.ssl.SupportedCipherSuiteFilter
 import io.netty.util.ReferenceCountUtil
 import io.netty.util.concurrent.Future
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -73,6 +75,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -87,6 +90,11 @@ private const val KEEPALIVE_PING_PAYLOAD = 0x466F78795650_4EL
 private const val OPEN_STREAM_TIMEOUT_MS = 20_000L
 
 private const val TCP_CONNECT_TIMEOUT_MS = 15_000
+
+/** Happy-eyeballs stagger for DUAL_STACK dialing: how long the
+ *  first family's attempt gets a head start before the second
+ *  family's attempt begins. */
+private const val DUAL_STACK_STAGGER_MS = 250L
 
 private const val TLS_ENDPOINT_IDENTIFICATION_HTTPS = "HTTPS"
 
@@ -134,15 +142,27 @@ class H2UpstreamSession(
     private val upstreamPort: Int,
     bearerToken: String,
     private val upstreamProxy: UpstreamProxyConfig? = null,
-    private val edgeAddress: String? = null,
+    private val edgeAddresses: List<String> = emptyList(),
     private val tlsSplitMode: SettingsStore.TlsSplitMode = SettingsStore.TlsSplitMode.OFF,
+    private val ipVersionMode: SettingsStore.IpVersionMode = SettingsStore.IpVersionMode.AUTO,
 ) : UpstreamSession {
 
     private val group = NioEventLoopGroup(1)
 
     @Volatile private var currentBearerToken: String = bearerToken
 
-    private val connectHost: String = edgeAddress?.takeIf { it.isNotBlank() } ?: upstreamHost
+    /** Ordered dial candidates for the edge, already shaped by
+     *  [ipVersionMode] at resolution time. Empty means no pinned
+     *  addresses were produced; dialing then falls back to the
+     *  upstream hostname itself. */
+    private val dialCandidates: List<String> =
+        edgeAddresses.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+
+    /** The connect target when an upstream proxy is configured:
+     *  the first candidate (or the hostname), handed to the proxy
+     *  UNRESOLVED — the proxy does the resolving, so the IP
+     *  version mode cannot apply to that hop. */
+    private val connectHost: String = dialCandidates.firstOrNull() ?: upstreamHost
 
     private val keepaliveScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var parentChannel: Channel? = null
@@ -248,14 +268,141 @@ class H2UpstreamSession(
         UpstreamTrust.trustManagerFactory()?.let { sslContextBuilder.trustManager(it) }
         val sslContext: SslContext = sslContextBuilder.build()
 
-        if (connectHost != upstreamHost) {
+        if (dialCandidates.isNotEmpty() && dialCandidates != listOf(upstreamHost)) {
             AppLogger.i(
                 TAG,
-                "custom edge address in use: TCP to $connectHost:$upstreamPort, still presenting and " +
-                    "verifying \"$upstreamHost\"",
+                "edge candidates for $upstreamHost:$upstreamPort ($ipVersionMode): " +
+                    dialCandidates.joinToString(", ") +
+                    " — TCP goes to a candidate; SNI and certificate verification stay on \"$upstreamHost\"",
             )
         }
 
+        val channel = dialUpstreamChannel(sslContext)
+        parentChannel = channel
+        lastActivityAt = System.currentTimeMillis()
+        lastStreamDataAt = System.currentTimeMillis()
+
+        channel.writeAndFlush(
+            DefaultHttp2WindowUpdateFrame(HTTP2_FLOW_CONTROL_WINDOW_BYTES - Http2CodecUtil.DEFAULT_WINDOW_SIZE),
+        )
+        startKeepalive()
+    }
+
+    /** Dials the parent channel per [ipVersionMode]. With an
+     *  upstream proxy configured there is exactly one target and
+     *  it stays UNRESOLVED: the proxy resolves it, so the IP
+     *  version mode cannot apply to that hop (documented
+     *  exception — the proxy's own resolution picks the family).
+     *  Otherwise the ordered candidates are dialed sequentially
+     *  with fallback, or raced under DUAL_STACK. */
+    private suspend fun dialUpstreamChannel(sslContext: SslContext): Channel {
+        if (upstreamProxy != null) {
+            return connectOnce(sslContext, connectHost, unresolved = true)
+        }
+        val targets = dialCandidates.ifEmpty { listOf(upstreamHost) }
+        return if (ipVersionMode == SettingsStore.IpVersionMode.DUAL_STACK && targets.size > 1) {
+            dialDualStack(sslContext, targets)
+        } else {
+            dialSequential(sslContext, targets)
+        }
+    }
+
+    /** Sequential fallback dialing: each candidate gets the usual
+     *  per-attempt TCP connect timeout; the first candidate whose
+     *  TCP+TLS+ALPN handshake completes wins, and a failed
+     *  candidate's channel is closed before the next is tried.
+     *  The VPN service's dial loop bounds the total time across
+     *  all candidates with its own connect timeout. */
+    private suspend fun dialSequential(sslContext: SslContext, targets: List<String>): Channel {
+        var lastFailure: Throwable? = null
+        for (target in targets) {
+            try {
+                return connectOnce(sslContext, target, unresolved = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                lastFailure = e
+                AppLogger.w(
+                    TAG,
+                    "edge candidate $target for $upstreamHost:$upstreamPort failed " +
+                        "(${e.javaClass.simpleName}: ${e.message}); trying the next candidate",
+                )
+            }
+        }
+        throw lastFailure ?: IOException("no edge candidates to dial for $upstreamHost:$upstreamPort")
+    }
+
+    /** Happy-eyeballs dialing for DUAL_STACK: the first family's
+     *  attempt starts immediately, the second family's after a
+     *  [DUAL_STACK_STAGGER_MS] stagger; the first completed
+     *  handshake wins. The loser is never leaked — a loser that
+     *  finishes after the winner has its channel closed on the
+     *  spot, and a loser still dialing is cancelled (connectOnce
+     *  closes its channel on cancellation). If both families
+     *  fail, the full candidate list gets the sequential
+     *  treatment. */
+    private suspend fun dialDualStack(sslContext: SslContext, targets: List<String>): Channel = coroutineScope {
+        val racers = listOfNotNull(
+            targets.firstOrNull { !it.contains(':') },
+            targets.firstOrNull { it.contains(':') },
+        ).distinct()
+        if (racers.size < 2) {
+            // Only one family on offer — nothing to race.
+            return@coroutineScope dialSequential(sslContext, targets)
+        }
+        val winner = CompletableDeferred<Channel>()
+        val failureCount = AtomicInteger(0)
+        val lastFailure = AtomicReference<Throwable?>(null)
+        val jobs = racers.mapIndexed { index, target ->
+            launch {
+                if (index > 0) {
+                    delay(DUAL_STACK_STAGGER_MS)
+                    if (winner.isCompleted) return@launch
+                }
+                val channel = try {
+                    connectOnce(sslContext, target, unresolved = false)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    lastFailure.set(e)
+                    if (failureCount.incrementAndGet() == racers.size) {
+                        winner.completeExceptionally(
+                            lastFailure.get()
+                                ?: IOException("dual-stack dial failed for $upstreamHost:$upstreamPort"),
+                        )
+                    }
+                    return@launch
+                }
+                if (!winner.complete(channel)) {
+                    AppLogger.d(TAG, "dual-stack: closing the losing candidate channel to $target")
+                    runCatching { channel.close() }
+                }
+            }
+        }
+        try {
+            winner.await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            AppLogger.w(
+                TAG,
+                "dual-stack race for $upstreamHost:$upstreamPort failed (${e.message}); " +
+                    "falling back to sequential candidates",
+            )
+            dialSequential(sslContext, targets)
+        } finally {
+            jobs.forEach { it.cancel() }
+        }
+    }
+
+    /** One dial attempt against [dialTarget]: builds the pipeline
+     *  (proxy handler, TLS split, SSL with SNI/verification pinned
+     *  to [upstreamHost] regardless of the target, HTTP/2 codec)
+     *  and returns the channel once the TLS+ALPN handshake has
+     *  completed. Each attempt gets its own handshake deferred —
+     *  the pipeline's inbound handler completes it — and a failed
+     *  or cancelled attempt closes its channel. */
+    private suspend fun connectOnce(sslContext: SslContext, dialTarget: String, unresolved: Boolean): Channel {
         val handshakeDone = CompletableDeferred<Unit>()
         val bootstrap = Bootstrap()
             .group(group)
@@ -395,7 +542,7 @@ class H2UpstreamSession(
                                     val negotiated = sslHandler.applicationProtocol()
                                     AppLogger.i(
                                         TAG,
-                                        "TLS handshake to $connectHost:$upstreamPort complete, " +
+                                        "TLS handshake to $dialTarget:$upstreamPort complete, " +
                                             "verified name=$upstreamHost, negotiated ALPN protocol=$negotiated, " +
                                             "local=${ctx.channel().localAddress()}",
                                     )
@@ -410,7 +557,7 @@ class H2UpstreamSession(
                                     }
                                 } else {
                                     val cause = evt.cause() ?: IllegalStateException("TLS handshake failed with no cause")
-                                    AppLogger.e(TAG, "TLS/ALPN handshake to $connectHost:$upstreamPort failed", cause)
+                                    AppLogger.e(TAG, "TLS/ALPN handshake to $dialTarget:$upstreamPort failed", cause)
                                     handshakeDone.completeExceptionally(cause)
                                 }
                             }
@@ -420,19 +567,20 @@ class H2UpstreamSession(
                 }
             })
 
-        parentChannel = if (upstreamProxy != null) {
-            bootstrap.connect(InetSocketAddress.createUnresolved(connectHost, upstreamPort)).awaitChannel()
+        val channel = if (unresolved) {
+            bootstrap.connect(InetSocketAddress.createUnresolved(dialTarget, upstreamPort)).awaitChannel()
         } else {
-            bootstrap.connect(connectHost, upstreamPort).awaitChannel()
+            bootstrap.connect(dialTarget, upstreamPort).awaitChannel()
         }
-        handshakeDone.await()
-        lastActivityAt = System.currentTimeMillis()
-        lastStreamDataAt = System.currentTimeMillis()
-
-        parentChannel?.writeAndFlush(
-            DefaultHttp2WindowUpdateFrame(HTTP2_FLOW_CONTROL_WINDOW_BYTES - Http2CodecUtil.DEFAULT_WINDOW_SIZE),
-        )
-        startKeepalive()
+        try {
+            handshakeDone.await()
+        } catch (failure: Throwable) {
+            // The handshake failed (or the caller gave up): do not
+            // leak the half-open channel to the caller.
+            runCatching { channel.close() }
+            throw failure
+        }
+        return channel
     }
 
     private fun buildProxyHandler(proxy: UpstreamProxyConfig): ProxyHandler {

@@ -55,6 +55,7 @@ class IFoxyApp : Application() {
         proxyStateStore = ProxyStateStore(this)
         settingsStore = SettingsStore(this)
         ControlPlaneHttp.tlsSplitModeProvider = { settingsStore.tlsSplitMode }
+        ControlPlaneHttp.ipVersionModeProvider = { settingsStore.ipVersionMode }
         guardianClient = GuardianClient()
         serverListClient = ServerListClient(this)
         accountStore = AccountStore(this)

@@ -134,6 +134,7 @@ fun SettingsScreen(
     var exitCheckEnabled by remember { mutableStateOf(settingsStore.exitCheckEnabled) }
     var dnsProvider by remember { mutableStateOf(settingsStore.dnsProvider) }
     var customDohUrl by remember { mutableStateOf(settingsStore.customDohUrl) }
+    var customDnsIp by remember { mutableStateOf(settingsStore.customDnsIp) }
     var bootstrapDnsProvider by remember { mutableStateOf(settingsStore.bootstrapDnsProvider) }
     var customBootstrapIp by remember { mutableStateOf(settingsStore.customBootstrapIp) }
     var socksBindAddress by remember { mutableStateOf(settingsStore.socksBindAddress) }
@@ -151,6 +152,7 @@ fun SettingsScreen(
     var excludedApps by remember { mutableStateOf(settingsStore.excludedApps) }
     var mtu by remember { mutableStateOf(settingsStore.mtu) }
     var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
+    var ipVersionMode by remember { mutableStateOf(settingsStore.ipVersionMode) }
     var accountAlertsEnabled by remember { mutableStateOf(settingsStore.accountAlertsEnabled) }
     var themeMode by remember { mutableStateOf(themeController.mode) }
     var showThemeDialog by remember { mutableStateOf(false) }
@@ -180,6 +182,7 @@ fun SettingsScreen(
         exitCheckEnabled = settingsStore.exitCheckEnabled
         dnsProvider = settingsStore.dnsProvider
         customDohUrl = settingsStore.customDohUrl
+        customDnsIp = settingsStore.customDnsIp
         bootstrapDnsProvider = settingsStore.bootstrapDnsProvider
         customBootstrapIp = settingsStore.customBootstrapIp
         socksBindAddress = settingsStore.socksBindAddress
@@ -197,6 +200,7 @@ fun SettingsScreen(
         excludedApps = settingsStore.excludedApps
         mtu = settingsStore.mtu
         tlsSplitMode = settingsStore.tlsSplitMode
+        ipVersionMode = settingsStore.ipVersionMode
         accountAlertsEnabled = settingsStore.accountAlertsEnabled
         themeMode = themeController.mode
         accountsTick++
@@ -213,6 +217,7 @@ fun SettingsScreen(
     var showUpstreamProxyCredentialsDialog by remember { mutableStateOf(false) }
     var showSplitTunnelDialog by remember { mutableStateOf(false) }
     var showTlsSplitDialog by remember { mutableStateOf(false) }
+    var showIpVersionDialog by remember { mutableStateOf(false) }
 
     if (showMtuDialog) {
         MtuPickerDialog(
@@ -231,12 +236,15 @@ fun SettingsScreen(
         DnsProviderPickerDialog(
             currentProvider = dnsProvider,
             currentCustomUrl = customDohUrl,
+            currentCustomIp = customDnsIp,
             onDismiss = { showDnsProviderDialog = false },
-            onConfirm = { provider, url ->
+            onConfirm = { provider, url, ip ->
                 dnsProvider = provider
                 settingsStore.dnsProvider = provider
                 customDohUrl = url
                 settingsStore.customDohUrl = url
+                customDnsIp = ip
+                settingsStore.customDnsIp = ip
                 showDnsProviderDialog = false
                 notifySaved(tunnelScoped = true)
             },
@@ -371,6 +379,18 @@ fun SettingsScreen(
             },
         )
     }
+    if (showIpVersionDialog) {
+        IpVersionModePickerDialog(
+            current = ipVersionMode,
+            onDismiss = { showIpVersionDialog = false },
+            onConfirm = {
+                ipVersionMode = it
+                settingsStore.ipVersionMode = it
+                showIpVersionDialog = false
+                notifySaved(tunnelScoped = true)
+            },
+        )
+    }
     if (showThemeDialog) {
         ThemePickerDialog(
             current = themeMode,
@@ -479,6 +499,12 @@ fun SettingsScreen(
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { showMtuDialog = true },
             )
+            ListItem(
+                headlineContent = { Text("IP version") },
+                supportingContent = { Text(ipVersionMode.label) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showIpVersionDialog = true },
+            )
 
             }
             SettingsSection(title = "Appearance", darkTheme = darkTheme) {
@@ -505,6 +531,7 @@ fun SettingsScreen(
                     val subtitle = when (dnsProvider) {
                         SettingsStore.DnsProvider.SYSTEM_DEFAULT -> "Default"
                         SettingsStore.DnsProvider.CUSTOM -> customDohUrl.ifBlank { "Custom DoH (Not configured)" }
+                        SettingsStore.DnsProvider.CUSTOM_DNS -> customDnsIp.ifBlank { "Custom DNS (Not configured)" }
                         else -> dnsProvider.label
                     }
                     Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -881,14 +908,18 @@ fun SettingsScreen(
 private fun DnsProviderPickerDialog(
     currentProvider: SettingsStore.DnsProvider,
     currentCustomUrl: String,
+    currentCustomIp: String,
     onDismiss: () -> Unit,
-    onConfirm: (SettingsStore.DnsProvider, String) -> Unit,
+    onConfirm: (SettingsStore.DnsProvider, String, String) -> Unit,
 ) {
     var selectedProvider by remember { mutableStateOf(currentProvider) }
     var urlText by rememberSaveable { mutableStateOf(currentCustomUrl) }
+    var ipText by rememberSaveable { mutableStateOf(currentCustomIp) }
     val isCustom = selectedProvider == SettingsStore.DnsProvider.CUSTOM
+    val isCustomDns = selectedProvider == SettingsStore.DnsProvider.CUSTOM_DNS
     val isValidCustomUrl = SettingsStore.isValidDohUrl(urlText)
-    val canSave = !isCustom || isValidCustomUrl
+    val isValidCustomIp = SettingsStore.isValidIpAddress(ipText.trim())
+    val canSave = (!isCustom || isValidCustomUrl) && (!isCustomDns || isValidCustomIp)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -921,6 +952,7 @@ private fun DnsProviderPickerDialog(
                             val detail = when (provider) {
                                 SettingsStore.DnsProvider.SYSTEM_DEFAULT -> "Resolved at the VPN edge"
                                 SettingsStore.DnsProvider.CUSTOM -> "Specify an HTTPS DoH endpoint URL"
+                                SettingsStore.DnsProvider.CUSTOM_DNS -> "Custom DNS server (over HTTPS)"
                                 else -> provider.dohUrl ?: ""
                             }
                             if (detail.isNotEmpty()) {
@@ -951,11 +983,37 @@ private fun DnsProviderPickerDialog(
                             .padding(top = 8.dp),
                     )
                 }
+                if (isCustomDns) {
+                    OutlinedTextField(
+                        value = ipText,
+                        onValueChange = { ipText = it },
+                        label = { Text("DNS server IP address") },
+                        placeholder = { Text("e.g. 1.1.1.1") },
+                        singleLine = true,
+                        isError = ipText.isNotBlank() && !isValidCustomIp,
+                        supportingText = {
+                            if (ipText.isNotBlank() && !isValidCustomIp) {
+                                Text("Enter a valid IP address")
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                    )
+                    Text(
+                        "The server is contacted over DNS-over-HTTPS (port 443) — " +
+                            "the tunnel cannot carry plain UDP DNS.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(selectedProvider, urlText.trim()) },
+                onClick = { onConfirm(selectedProvider, urlText.trim(), ipText.trim()) },
                 enabled = canSave,
                 modifier = Modifier.heightIn(min = 48.dp),
             ) {
@@ -1270,6 +1328,54 @@ private fun UpstreamProxyTypePickerDialog(
                     ) {
                         RadioButton(selected = selected == type, onClick = { selected = type })
                         Text(type.name, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun IpVersionModePickerDialog(
+    current: SettingsStore.IpVersionMode,
+    onDismiss: () -> Unit,
+    onConfirm: (SettingsStore.IpVersionMode) -> Unit,
+) {
+    var selected by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("IP version") },
+        text = {
+            Column {
+                Text(
+                    "Which address families are used to reach the VPN server, and in which order they are tried.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+                SettingsStore.IpVersionMode.entries.forEach { mode ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = selected == mode, onClick = { selected = mode })
+                            .padding(vertical = 6.dp),
+                    ) {
+                        RadioButton(selected = selected == mode, onClick = { selected = mode })
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(mode.label, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                mode.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
