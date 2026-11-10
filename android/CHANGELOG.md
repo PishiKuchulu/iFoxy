@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.37 (versionCode 74) - CAPTCHA step presentation fix, IP version setting, Custom DNS
+
+- The manual verification step from 1.0.36 could be swallowed
+  before it ever appeared. On-device, tapping "Cancel and try
+  again" while the token exchange was still running cleared
+  the sign-in state; the native exchange still completed in
+  the background, and when its CAPTCHA verdict arrived the
+  challenge token was set — but the browser screen only
+  composed while a sign-in URL was set, so the verification
+  step never showed and no message explained why. The screen
+  now composes whenever a verification challenge is pending,
+  a mid-exchange cancel no longer clears the state a pending
+  verdict lands on, and the CAPTCHA decision is logged. The
+  solver's probe loop also keeps a captured CAPTCHA failure
+  instead of letting a later probe's ordinary failure
+  overwrite it, so the step is offered regardless of probe
+  order.
+- New "IP version" setting (Settings > Connection) for the
+  Guardian connection, with five modes: Auto (IPv4, then
+  IPv6), Both at once (dual-stack), IPv6 first, then IPv4,
+  IPv4 only, and IPv6 only. The edge resolver now fetches
+  both address families and the connection dials the
+  mode-ordered candidates with fallback — or races the two
+  families under dual-stack — while TLS name verification
+  stays on the real server hostname. The system-DNS path and
+  the control plane's own name lookups honor the same mode;
+  with a chained upstream proxy the proxy still resolves, as
+  before. The built-in resolver presets gained IPv6
+  endpoints, used when IPv6-only is selected.
+- New "Custom DNS" tunnel DNS option: enter a DNS server's
+  IP address (IPv4 or IPv6) and the tunnel uses it as a
+  DNS-over-HTTPS endpoint. (Plain UDP DNS cannot run inside
+  the tunnel — the upstream carries TCP only — so the custom
+  server is spoken to over HTTPS, like the built-in
+  providers.)
+
 ## 1.0.36 (versionCode 73) - manual verification step for Mozilla's CAPTCHA
 
 - When Mozilla's bot protection answers the native token
