@@ -1,5 +1,20 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.37 combined release - CAPTCHA step fix, IP version setting, Custom DNS (Android)
+
+Android-focused release (desktop unchanged, still 0.2.3):
+the manual verification step from 1.0.36 is now guaranteed
+to appear — a mid-exchange cancel could clear the sign-in
+state before the CAPTCHA verdict landed, swallowing the
+step entirely; sign-in also gains a five-mode IP version
+setting for the Guardian connection (Auto, dual-stack,
+IPv6 first, IPv4 only, IPv6 only) and a Custom DNS tunnel
+provider that uses a user-entered server IP over
+DNS-over-HTTPS.
+
+Android 1.0.37 (versionCode 74): see android/CHANGELOG.md.
+Supersedes v1.0.36.
+
 ## v1.0.36 combined release - manual Fastly verification step (Android)
 
 Android-focused feature (desktop unchanged, still 0.2.3):
