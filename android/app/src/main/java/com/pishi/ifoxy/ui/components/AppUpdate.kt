@@ -409,21 +409,24 @@ fun AppUpdateDialog(controller: AppUpdateController) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
-                // Cap the height and scroll the content: on short
-                // viewports (landscape, split-screen) an unbounded
-                // column pushed the action buttons off-screen.
+                // Compact by design so the whole dialog fits a phone
+                // screen with no internal scrolling. The height cap
+                // and scroll remain only as a last-resort fallback on
+                // very short viewports (landscape, split-screen),
+                // where an unbounded column would push the action
+                // buttons off-screen.
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(28.dp),
+                    .padding(horizontal = 22.dp, vertical = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 // Glowing download glyph over a soft orange radial glow.
                 Box(contentAlignment = Alignment.Center) {
                     Box(
-                        Modifier.size(84.dp).clip(CircleShape).background(
+                        Modifier.size(64.dp).clip(CircleShape).background(
                             Brush.radialGradient(
                                 listOf(
                                     IFoxyNeonOrange.copy(alpha = glowPulse),
@@ -434,23 +437,23 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                     )
                     Box(
                         Modifier
-                            .size(64.dp)
-                            .clip(RoundedCornerShape(18.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .background(UpdateCardBg)
-                            .border(1.5.dp, IFoxyNeonOrange, RoundedCornerShape(18.dp)),
+                            .border(1.5.dp, IFoxyNeonOrange, RoundedCornerShape(14.dp)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             Icons.Filled.ArrowDownward,
                             contentDescription = null,
                             tint = if (state is UpdateUiState.Failed) IFoxyErrorOnDark else IFoxyYellow,
-                            modifier = Modifier.size(30.dp),
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
                         when (state) {
@@ -460,7 +463,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             else -> "Update available"
                         },
                         color = Color.White,
-                        fontSize = 24.sp,
+                        fontSize = 21.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = PoppinsFamily,
                         textAlign = TextAlign.Center,
@@ -473,21 +476,21 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                             else -> "A new version is ready"
                         },
                         color = UpdateSubtitle,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontFamily = PoppinsFamily,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
                 if (info != null) {
-                    // Current → new version card.
+                    // Current → new version card: one compact row.
                     Surface(
-                        shape = RoundedCornerShape(20.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = UpdateGlass,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
@@ -496,7 +499,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                                 Icons.Filled.ArrowForward,
                                 contentDescription = null,
                                 tint = IFoxyNeonOrange,
-                                modifier = Modifier.size(28.dp),
+                                modifier = Modifier.size(22.dp),
                             )
                             UpdateVersionCell("New", "v${info.version}", IFoxyYellow)
                         }
@@ -508,7 +511,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
@@ -516,7 +519,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                                 Icons.Filled.Archive,
                                 contentDescription = null,
                                 tint = UpdateLabel,
-                                modifier = Modifier.size(20.dp),
+                                modifier = Modifier.size(18.dp),
                             )
                             Text(
                                 "${info.assetName} · ${formatBytes(info.sizeBytes)}",
@@ -528,22 +531,26 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                     }
                     // The expected hash, so it can be compared against
                     // the release page out-of-band. Rendered in fixed
-                    // 16-character chunks, one per line: the full 64-char
-                    // digest is wider than the dialog and would otherwise
-                    // wrap mid-hash, which makes visual comparison hard.
+                    // 32-character chunks, one per line (two lines for
+                    // the full 64-char digest): a single line is wider
+                    // than the dialog and would wrap mid-hash, which
+                    // makes visual comparison hard. The full hash is
+                    // always shown — never truncated.
                     info.sha256?.let { sha ->
                         Column(Modifier.fillMaxWidth()) {
                             Text(
                                 "SHA-256:",
                                 color = UpdateLabel,
                                 fontSize = 10.sp,
+                                lineHeight = 12.sp,
                                 fontFamily = FontFamily.Monospace,
                             )
-                            sha.chunked(16).forEach { chunk ->
+                            sha.chunked(32).forEach { chunk ->
                                 Text(
                                     chunk,
                                     color = UpdateLabel,
                                     fontSize = 10.sp,
+                                    lineHeight = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     maxLines = 1,
                                 )
@@ -561,12 +568,12 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                     val percent = (fraction * 100).toInt()
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
                             "Downloading… $percent%",
                             color = Color.White,
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontFamily = PoppinsFamily,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -643,7 +650,7 @@ fun AppUpdateDialog(controller: AppUpdateController) {
                         Text(
                             "${formatBytes(state.downloaded)} / ${formatBytes(total)}",
                             color = UpdateLabel,
-                            fontSize = 13.5.sp,
+                            fontSize = 13.sp,
                             fontFamily = PoppinsFamily,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -731,18 +738,18 @@ fun AppUpdateDialog(controller: AppUpdateController) {
 private fun UpdateVersionCell(label: String, version: String, versionColor: Color) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
             label.uppercase(),
             color = UpdateLabel,
-            fontSize = 11.5.sp,
+            fontSize = 11.sp,
             fontFamily = PoppinsFamily,
         )
         Text(
             version,
             color = versionColor,
-            fontSize = 22.sp,
+            fontSize = 19.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = PoppinsFamily,
         )
