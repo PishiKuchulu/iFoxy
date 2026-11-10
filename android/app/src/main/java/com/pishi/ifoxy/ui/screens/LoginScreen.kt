@@ -62,6 +62,36 @@ import com.pishi.ifoxy.ui.theme.PoppinsFamily
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+/** What [LoginScreen] does with an "Unconfirmed session" verdict
+ *  (FxA errno 104) from the native token exchange. Pure, so the
+ *  waiting mode's retry discipline is unit-testable. */
+internal enum class UnconfirmedFailureAction {
+    /** First unconfirmed verdict for a session: keep the browser
+     *  open in the waiting-for-confirmation mode (v1.0.38). */
+    ENTER_WAITING_MODE,
+
+    /** The waiting mode's MANUAL retry still came back
+     *  unconfirmed: manual attempts are the user's own call, so
+     *  the mode stays up and they can finish entering the code
+     *  and tap Continue again. */
+    STAY_IN_WAITING_MODE,
+
+    /** The waiting mode's one AUTOMATIC retry still came back
+     *  unconfirmed: fall back to the terminal behavior (close the
+     *  browser, "confirm from the email, then sign in again")
+     *  instead of looping. */
+    TERMINAL_FALLBACK,
+}
+
+internal fun unconfirmedFailureAction(
+    wasWaitingModeRetry: Boolean,
+    retryWasManual: Boolean,
+): UnconfirmedFailureAction = when {
+    !wasWaitingModeRetry -> UnconfirmedFailureAction.ENTER_WAITING_MODE
+    retryWasManual -> UnconfirmedFailureAction.STAY_IN_WAITING_MODE
+    else -> UnconfirmedFailureAction.TERMINAL_FALLBACK
+}
+
 /**
  * Sign in, per the Penpot design (04): dark brand screen, glowing orange
  * power mark. The credential form is gone: sign-in itself happens on
@@ -92,9 +122,28 @@ fun LoginScreen(
     // back into the challenge step).
     var captchaSessionToken by rememberSaveable { mutableStateOf<String?>(null) }
     var captchaRetryUsed by rememberSaveable { mutableStateOf(false) }
+    // Email confirmation wait (v1.0.38): the session token whose
+    // native exchange FxA refused with errno 104 "Unconfirmed
+    // session" — Mozilla emailed a confirmation code and the
+    // session cannot be exchanged until the code is entered on
+    // Mozilla's page. The browser screen stays composed in a
+    // waiting mode (see unconfirmedFailureAction) instead of being
+    // torn down: nulling the start URL used to destroy the WebView,
+    // the only surface where the code could ever be typed, and
+    // left the emailed code with nowhere to go.
+    // unconfirmedRetryUsed spends the mode's single AUTOMATIC
+    // retry; manual Continue taps are the user's own call and may
+    // re-attempt.
+    var unconfirmedSessionToken by rememberSaveable { mutableStateOf<String?>(null) }
+    var unconfirmedRetryUsed by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun handleBrowserSession(sessionToken: String, preExchangedToken: JSONObject?) {
+    fun handleBrowserSession(
+        sessionToken: String,
+        preExchangedToken: JSONObject?,
+        unconfirmedRetry: Boolean = false,
+        unconfirmedManual: Boolean = false,
+    ) {
         if (completingBrowserLogin) return
         completingBrowserLogin = true
         errorMessage = null
@@ -104,6 +153,8 @@ fun LoginScreen(
             completingBrowserLogin = false
             result.onSuccess {
                 captchaSessionToken = null
+                unconfirmedSessionToken = null
+                unconfirmedRetryUsed = false
                 browserStartUrl = null
                 onSignedIn()
             }.onFailure {
@@ -123,15 +174,54 @@ fun LoginScreen(
                             "harvested into the native jar before the single retry)",
                     )
                     captchaRetryUsed = true
+                    unconfirmedSessionToken = null
+                    unconfirmedRetryUsed = false
                     captchaSessionToken = sessionToken
                 } else if (it.isUnconfirmedSession()) {
-                    // Mozilla accepted the credentials but still wants
-                    // the sign-in confirmed from the email it sent; the
-                    // session cannot be exchanged until that happens.
-                    browserStartUrl = null
-                    infoMessage =
-                        "Mozilla is waiting for you to confirm this sign-in from the " +
-                            "email it sent you. Confirm it, then sign in again."
+                    when (unconfirmedFailureAction(unconfirmedRetry, unconfirmedManual)) {
+                        UnconfirmedFailureAction.ENTER_WAITING_MODE -> {
+                            // Mozilla accepted the credentials but
+                            // still wants the sign-in confirmed with
+                            // the code it emailed. Do NOT tear the
+                            // browser down (the pre-1.0.38 behavior:
+                            // the WebView is destroyed and the code
+                            // has nowhere to be typed). Keep the
+                            // token and put the browser into the
+                            // waiting mode instead: the page-side
+                            // verify hooks — or the user's Continue
+                            // tap — retry this same token once the
+                            // session is confirmed on Mozilla's page.
+                            AppLogger.i(
+                                "LoginScreen",
+                                "Unconfirmed-session verdict on the native token exchange; " +
+                                    "keeping the browser open on Mozilla's page so the " +
+                                    "emailed confirmation code can be entered there",
+                            )
+                            unconfirmedRetryUsed = false
+                            unconfirmedSessionToken = sessionToken
+                        }
+                        UnconfirmedFailureAction.STAY_IN_WAITING_MODE -> {
+                            // A manual retry the user asked for while
+                            // still confirming: stay in the mode so
+                            // they can finish entering the code and
+                            // tap Continue again.
+                            errorMessage =
+                                "Mozilla still shows this sign-in as unconfirmed. " +
+                                    "Enter the code from the email on the page below, " +
+                                    "then tap Continue."
+                        }
+                        UnconfirmedFailureAction.TERMINAL_FALLBACK -> {
+                            // The mode's one automatic retry also
+                            // came back unconfirmed: the previous
+                            // terminal behavior, never a loop.
+                            unconfirmedSessionToken = null
+                            unconfirmedRetryUsed = false
+                            browserStartUrl = null
+                            infoMessage =
+                                "Mozilla is waiting for you to confirm this sign-in from the " +
+                                    "email it sent you. Confirm it, then sign in again."
+                        }
+                    }
                 } else {
                     errorMessage = it.message ?: "Sign-in failed. Please try again."
                 }
@@ -140,25 +230,40 @@ fun LoginScreen(
     }
 
     // The browser screen composes while a sign-in page is open OR
-    // while a manual-verification challenge is pending. The second
-    // disjunct matters (v1.0.37): a mid-exchange "Cancel and try
-    // again" tap can null browserStartUrl before the native
-    // exchange's CAPTCHA verdict lands; gating on browserStartUrl
-    // alone then swallowed the verdict — captchaSessionToken was
-    // set but the challenge step never composed and no message
-    // showed. A pending challenge token must present on its own.
-    if (browserStartUrl != null || captchaSessionToken != null) {
+    // while a manual-verification challenge is pending OR while an
+    // email confirmation is pending. The extra disjuncts matter
+    // (v1.0.37): a mid-exchange "Cancel and try again" tap can null
+    // browserStartUrl before the native exchange's CAPTCHA verdict
+    // lands; gating on browserStartUrl alone then swallowed the
+    // verdict — captchaSessionToken was set but the challenge step
+    // never composed and no message showed. A pending step token
+    // must present on its own.
+    if (browserStartUrl != null || captchaSessionToken != null || unconfirmedSessionToken != null) {
         val challengeToken = captchaSessionToken
-        // Keyed on the mode: entering or leaving the manual
-        // verification step rebuilds the screen with a fresh
-        // WebView (the factory loads startUrl only once), pointed
-        // at the Firefox host that serves the challenge.
-        key(challengeToken != null) {
+        val unconfirmedToken = unconfirmedSessionToken
+        // Keyed on the mode: entering or leaving a step rebuilds
+        // the screen with a fresh WebView (the factory loads
+        // startUrl only once) — the verification step pointed at
+        // the Firefox host that serves the challenge, and the
+        // confirmation wait pointed back at the sign-in start URL
+        // (the clearance flow may have navigated the previous
+        // WebView to the API host, where no code form exists).
+        key(
+            when {
+                challengeToken != null -> 1
+                unconfirmedToken != null -> 2
+                else -> 0
+            },
+        ) {
             BrowserLoginScreen(
-                startUrl = if (challengeToken != null) {
-                    "https://accounts.firefox.com/"
-                } else {
-                    browserStartUrl!!
+                startUrl = when {
+                    challengeToken != null -> "https://accounts.firefox.com/"
+                    // The sign-in start URL: Mozilla's page routes
+                    // the unconfirmed session to its code form from
+                    // there, even if the clearance flow left the
+                    // previous WebView sitting on the API host.
+                    unconfirmedToken != null -> authRepository.getBrowserLoginUrl()
+                    else -> browserStartUrl!!
                 },
                 busy = completingBrowserLogin,
                 errorMessage = errorMessage,
@@ -181,6 +286,8 @@ fun LoginScreen(
                         errorMessage = null
                         captchaSessionToken = null
                         captchaRetryUsed = false
+                        unconfirmedSessionToken = null
+                        unconfirmedRetryUsed = false
                     }
                 },
                 onOpenLogs = onOpenLogs,
@@ -200,6 +307,28 @@ fun LoginScreen(
                                     AppLogger.w("LoginScreen", "WebView cookie harvest failed", it)
                                 }
                             handleBrowserSession(token, null)
+                        }
+                    }
+                },
+                unconfirmedToken = unconfirmedToken,
+                onConfirmationPassed = { manual ->
+                    val token = unconfirmedSessionToken
+                    if (token != null && !completingBrowserLogin) {
+                        // The mode gets exactly one AUTOMATIC retry
+                        // per entry: page-side signals after that
+                        // budget is spent are ignored, and the spent
+                        // retry's own verdict decides what happens
+                        // (see unconfirmedFailureAction). Manual
+                        // Continue taps always re-attempt.
+                        val autoBudgetSpent = !manual && unconfirmedRetryUsed
+                        if (!autoBudgetSpent) {
+                            if (!manual) unconfirmedRetryUsed = true
+                            handleBrowserSession(
+                                token,
+                                null,
+                                unconfirmedRetry = true,
+                                unconfirmedManual = manual,
+                            )
                         }
                     }
                 },
@@ -332,6 +461,8 @@ fun LoginScreen(
                     infoMessage = null
                     captchaSessionToken = null
                     captchaRetryUsed = false
+                    unconfirmedSessionToken = null
+                    unconfirmedRetryUsed = false
                     browserStartUrl = authRepository.getBrowserLoginUrl()
                 },
                 colors = ButtonDefaults.buttonColors(
