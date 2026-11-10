@@ -116,6 +116,12 @@ fun LoginScreen(
                     // cookies are harvested into the native jar, and
                     // this same session token gets exactly one native
                     // retry (see onChallengePassed below).
+                    AppLogger.i(
+                        "LoginScreen",
+                        "CAPTCHA verdict on the native token exchange; presenting the " +
+                            "manual verification step (browser-earned cookies are " +
+                            "harvested into the native jar before the single retry)",
+                    )
                     captchaRetryUsed = true
                     captchaSessionToken = sessionToken
                 } else if (it.isUnconfirmedSession()) {
@@ -133,7 +139,15 @@ fun LoginScreen(
         }
     }
 
-    if (browserStartUrl != null) {
+    // The browser screen composes while a sign-in page is open OR
+    // while a manual-verification challenge is pending. The second
+    // disjunct matters (v1.0.37): a mid-exchange "Cancel and try
+    // again" tap can null browserStartUrl before the native
+    // exchange's CAPTCHA verdict lands; gating on browserStartUrl
+    // alone then swallowed the verdict — captchaSessionToken was
+    // set but the challenge step never composed and no message
+    // showed. A pending challenge token must present on its own.
+    if (browserStartUrl != null || captchaSessionToken != null) {
         val challengeToken = captchaSessionToken
         // Keyed on the mode: entering or leaving the manual
         // verification step rebuilds the screen with a fresh
@@ -150,11 +164,24 @@ fun LoginScreen(
                 errorMessage = errorMessage,
                 onSessionCaptured = ::handleBrowserSession,
                 onCanceled = {
-                    browserStartUrl = null
-                    completingBrowserLogin = false
-                    errorMessage = null
-                    captchaSessionToken = null
-                    captchaRetryUsed = false
+                    // Cancel semantics (v1.0.37): while a captured
+                    // session's native completion is in flight, its
+                    // success / CAPTCHA / error verdict is still
+                    // going to land here — clearing the browser /
+                    // challenge state now would swallow that verdict
+                    // (the 1.0.36 on-device failure: the challenge
+                    // step never appeared after a mid-exchange
+                    // cancel). In that case the cancel only leaves
+                    // the WebView interactive again; the completion
+                    // owns the state until it finishes. A cancel
+                    // with nothing in flight is a plain abandon and
+                    // clears everything, as before.
+                    if (!completingBrowserLogin) {
+                        browserStartUrl = null
+                        errorMessage = null
+                        captchaSessionToken = null
+                        captchaRetryUsed = false
+                    }
                 },
                 onOpenLogs = onOpenLogs,
                 challengeToken = challengeToken,
