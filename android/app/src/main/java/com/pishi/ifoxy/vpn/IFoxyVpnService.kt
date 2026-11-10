@@ -38,6 +38,7 @@ import com.pishi.ifoxy.data.TokenInvalidError
 import com.pishi.ifoxy.data.TokenStore
 import com.pishi.ifoxy.data.formatBytesPerSecond
 import com.pishi.ifoxy.data.isBotProtectionBlock
+import com.pishi.ifoxy.data.orderInetAddresses
 import com.pishi.ifoxy.data.model.ConnectionState
 import com.pishi.ifoxy.data.model.ProxyCandidate
 import com.pishi.ifoxy.vpn.socks.LocalHttpProxyServer
@@ -63,7 +64,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.net.InetAddress
 
 data class VpnLiveStats(
     val txRateBytesPerSec: Long = 0L,
@@ -582,7 +585,15 @@ class IFoxyVpnService : VpnService() {
                 ""
             }
 
-            val dohEndpointAddresses = settingsStore.effectiveBootstrapAddresses
+            // Under IPv6-only the bootstrap DoH endpoints must
+            // themselves be IPv6 — the built-in presets' IPv4
+            // literals could never be reached (v1.0.37).
+            val ipVersionMode = settingsStore.ipVersionMode
+            val dohEndpointAddresses = if (ipVersionMode == SettingsStore.IpVersionMode.IPV6_ONLY) {
+                settingsStore.effectiveBootstrapAddressesV6
+            } else {
+                settingsStore.effectiveBootstrapAddresses
+            }
             val bootstrapDesc = if (dohEndpointAddresses.isEmpty()) {
                 "system DNS"
             } else {
@@ -796,16 +807,20 @@ class IFoxyVpnService : VpnService() {
                 } ?: " (lifetime not stated)"
                 AppLogger.i(TAG, "connect: acquired Guardian proxy pass$lifetimeNote")
 
-                val edgeAddress = customEdgeAddress
-                    ?: resolveEdgeAddress(target.host, upstreamProxyConfig, dohEndpointAddresses)
+                val edgeAddresses = if (customEdgeAddress != null) {
+                    listOf(customEdgeAddress)
+                } else {
+                    resolveEdgeAddresses(target.host, upstreamProxyConfig, dohEndpointAddresses, ipVersionMode)
+                }
 
                 val session = H2UpstreamSession(
                     target.host,
                     target.port,
                     pass.token,
                     upstreamProxyConfig,
-                    edgeAddress,
+                    edgeAddresses,
                     tlsSplitMode = settingsStore.tlsSplitMode,
+                    ipVersionMode = ipVersionMode,
                 )
                 try {
                     session.connect()
@@ -1112,17 +1127,42 @@ class IFoxyVpnService : VpnService() {
         return attempt.getOrDefault(emptyList())
     }
 
-    private suspend fun resolveEdgeAddress(
+    /** Resolves the Guardian edge [host] into the ordered dial
+     *  candidates for [ipVersionMode] (v1.0.37). Every path honors
+     *  the mode:
+     *
+     *  - Bootstrap DoH endpoints configured: [EdgeAddressResolver]
+     *    fetches both families over DoH and orders them by mode.
+     *  - Bootstrap = System DNS, or DoH produced nothing: the
+     *    system resolver's results are ordered/filtered by the
+     *    same mode here, so this path no longer dials by hostname
+     *    with zero family control.
+     *
+     *  The one scoped exception is a configured upstream proxy:
+     *  Netty hands the edge hostname to the proxy UNRESOLVED and
+     *  the proxy performs the resolution, so there is no local
+     *  address family to order — the proxy's own resolver decides.
+     *  That case returns an empty list and the session dials the
+     *  hostname through the proxy, exactly as before. */
+    private suspend fun resolveEdgeAddresses(
         host: String,
         upstreamProxy: UpstreamProxyConfig?,
         dohEndpointAddresses: List<String>,
-    ): String? {
-        if (upstreamProxy != null) return null
-        if (dohEndpointAddresses.isEmpty()) {
-            AppLogger.d(TAG, "resolving $host via system DNS resolver (direct network)")
-            return null
+        ipVersionMode: SettingsStore.IpVersionMode,
+    ): List<String> {
+        if (upstreamProxy != null) return emptyList()
+        if (dohEndpointAddresses.isNotEmpty()) {
+            val resolved = EdgeAddressResolver.resolve(host, dohEndpointAddresses, ipVersionMode)
+            if (resolved.isNotEmpty()) return resolved
         }
-        return EdgeAddressResolver.resolve(host, dohEndpointAddresses)
+        AppLogger.d(
+            TAG,
+            "resolving $host via the system resolver, ordered by IP version mode $ipVersionMode",
+        )
+        val systemAddresses = withContext(Dispatchers.IO) {
+            runCatching { InetAddress.getAllByName(host).toList() }.getOrDefault(emptyList())
+        }
+        return orderInetAddresses(systemAddresses, ipVersionMode).mapNotNull { it.hostAddress }
     }
 
     private suspend fun renewAccessToken(tokenStore: TokenStore): AccessTokenRenewal {
