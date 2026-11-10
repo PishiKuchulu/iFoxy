@@ -73,8 +73,8 @@ android {
         applicationId = "com.pishi.ifoxy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 74
-        versionName = "1.0.37"
+        versionCode = 75
+        versionName = "1.0.38"
 
         externalNativeBuild {
             ndkBuild {

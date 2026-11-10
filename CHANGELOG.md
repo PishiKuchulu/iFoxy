@@ -1,5 +1,18 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.38 combined release - email confirmation fix, compact update dialog (Android)
+
+Android-focused release (desktop unchanged, still 0.2.3):
+when Mozilla asks for the confirmation code it emails
+during sign-in, the built-in browser now stays open on
+Mozilla's page so the code can actually be entered there,
+and sign-in retries by itself once the confirmation lands;
+the in-app update dialog is also tightened so it fits on
+phone screens without scrolling inside itself.
+
+Android 1.0.38 (versionCode 75): see android/CHANGELOG.md.
+Supersedes v1.0.37.
+
 ## v1.0.37 combined release - CAPTCHA step fix, IP version setting, Custom DNS (Android)
 
 Android-focused release (desktop unchanged, still 0.2.3):

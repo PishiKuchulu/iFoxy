@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.38 (versionCode 75) - email confirmation code fix, compact update dialog
+
+- When Firefox Accounts asked for the confirmation code it
+  emails during sign-in, the sign-in could never be
+  completed: the native token exchange answered "Unconfirmed
+  session", and the app closed the built-in browser to show a
+  "confirm it, then sign in again" message — destroying the
+  only page where the code could be typed, so the emailed
+  code had nowhere to go and signing in again just repeated
+  the loop. The browser now stays open on Mozilla's page in a
+  waiting state: enter the code there and the exchange
+  retries automatically once the confirmation completes (a
+  Continue button remains as a manual fallback). The
+  challenge-clearance flow also no longer navigates the
+  browser away to the API host while a session is waiting
+  for on-page confirmation.
+- The in-app update dialog is more compact: it was tall
+  enough to scroll inside itself on phone screens. The
+  header, version card and spacing are tightened and the
+  full SHA-256 now takes two lines instead of four, so the
+  versions, file name and size, the complete hash, the
+  progress readout and both actions fit without scrolling.
+  No information was removed.
+
 ## 1.0.37 (versionCode 74) - CAPTCHA step presentation fix, IP version setting, Custom DNS
 
 - The manual verification step from 1.0.36 could be swallowed
