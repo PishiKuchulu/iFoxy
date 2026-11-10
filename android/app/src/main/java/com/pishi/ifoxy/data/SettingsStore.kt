@@ -121,10 +121,28 @@ class SettingsStore(context: Context) {
             prefs.edit().putString(KEY_CUSTOM_DOH_URL, trimmed).apply()
         }
 
+    /** Bare IP literal (IPv4 or IPv6) of the user's own DNS server,
+     *  used when [dnsProvider] is [DnsProvider.CUSTOM_DNS]: the
+     *  server is spoken to over DNS-over-HTTPS at
+     *  `https://<ip>/dns-query` — the tunnel's upstream offers TCP
+     *  CONNECT streams only, so plain UDP/53 DNS cannot run inside
+     *  it; the DoH form is the honest one. Same fail-closed setter
+     *  shape as [customBootstrapIp]: an invalid non-empty value is
+     *  refused, never stored. */
+    var customDnsIp: String
+        get() = prefs.getString(KEY_CUSTOM_DNS_IP, "") ?: ""
+        set(value) {
+            val trimmed = value.trim()
+            if (trimmed.isNotEmpty() && !isValidIpAddress(trimmed)) return
+            prefs.edit().putString(KEY_CUSTOM_DNS_IP, trimmed).apply()
+        }
+
     val effectiveDohUrl: String?
         get() = when (dnsProvider) {
             DnsProvider.SYSTEM_DEFAULT -> null
             DnsProvider.CUSTOM -> customDohUrl.takeIf { isValidDohUrl(it) }
+            DnsProvider.CUSTOM_DNS ->
+                customDnsIp.takeIf { isValidIpAddress(it) }?.let { dohUrlForIpLiteral(it) }
             else -> dnsProvider.dohUrl
         }
 
@@ -150,6 +168,27 @@ class SettingsStore(context: Context) {
             }
             BootstrapDnsProvider.SYSTEM -> emptyList()
             else -> bootstrapDnsProvider.addresses
+        }
+
+    /** IPv6 counterparts of [effectiveBootstrapAddresses], used as
+     *  the DoH endpoint set under [IpVersionMode.IPV6_ONLY]: the
+     *  built-in presets are IPv4 literals, which an IPv6-only edge
+     *  resolution could never reach. A custom bootstrap IP counts
+     *  only when it is itself an IPv6 literal; SYSTEM has no
+     *  endpoints in either family (the caller falls back to the
+     *  mode-ordered system resolver). */
+    val effectiveBootstrapAddressesV6: List<String>
+        get() = when (bootstrapDnsProvider) {
+            BootstrapDnsProvider.CUSTOM -> {
+                val ip = customBootstrapIp.trim()
+                if (isValidIpAddress(ip) && ip.contains(':')) {
+                    listOf(ip)
+                } else {
+                    BootstrapDnsProvider.AUTOMATIC.addressesV6
+                }
+            }
+            BootstrapDnsProvider.SYSTEM -> emptyList()
+            else -> bootstrapDnsProvider.addressesV6
         }
 
     var proxyOnlyMode: Boolean
@@ -206,6 +245,16 @@ class SettingsStore(context: Context) {
         } ?: TlsSplitMode.OFF
         set(value) { prefs.edit().putString(KEY_TLS_SPLIT_MODE, value.name).apply() }
 
+    /** How the Guardian edge hostname is resolved and dialed:
+     *  which address families are used, in which order (or raced).
+     *  Read fresh on every connect and also fed to the control
+     *  plane's DNS (IFoxyApp wires ControlPlaneHttp's provider). */
+    var ipVersionMode: IpVersionMode
+        get() = IpVersionMode.entries.firstOrNull {
+            it.name == prefs.getString(KEY_IP_VERSION_MODE, null)
+        } ?: IpVersionMode.AUTO
+        set(value) { prefs.edit().putString(KEY_IP_VERSION_MODE, value.name).apply() }
+
     enum class TlsSplitMode(
         val label: String,
         val description: String,
@@ -221,6 +270,33 @@ class SettingsStore(context: Context) {
         SNI(
             label = "SNI hostname",
             description = "Fragments the SNI extension across packets (defeats DPI)",
+        ),
+        ;
+    }
+
+    enum class IpVersionMode(
+        val label: String,
+        val description: String,
+    ) {
+        AUTO(
+            label = "Auto (IPv4, then IPv6)",
+            description = "Try IPv4 addresses first, then IPv6",
+        ),
+        DUAL_STACK(
+            label = "Both at once (dual-stack)",
+            description = "Race IPv4 and IPv6; the first connection wins",
+        ),
+        IPV6_FIRST(
+            label = "IPv6 first, then IPv4",
+            description = "Try IPv6 addresses first, then IPv4",
+        ),
+        IPV4_ONLY(
+            label = "IPv4 only",
+            description = "Use IPv4 addresses only",
+        ),
+        IPV6_ONLY(
+            label = "IPv6 only",
+            description = "Use IPv6 addresses only",
         ),
         ;
     }
@@ -255,6 +331,10 @@ class SettingsStore(context: Context) {
             label = "Custom DoH",
             dohUrl = null,
         ),
+        CUSTOM_DNS(
+            label = "Custom DNS",
+            dohUrl = null,
+        ),
         ;
     }
 
@@ -262,26 +342,31 @@ class SettingsStore(context: Context) {
         val label: String,
         val description: String,
         val addresses: List<String>,
+        val addressesV6: List<String> = emptyList(),
     ) {
         AUTOMATIC(
             label = "Automatic",
             description = "Races all default DoH endpoints",
             addresses = listOf("9.9.9.9", "1.1.1.1", "8.8.8.8"),
+            addressesV6 = listOf("2620:fe::fe", "2606:4700:4700::1111", "2001:4860:4860::8888"),
         ),
         QUAD9(
             label = "Quad9",
             description = "9.9.9.9, 149.112.112.112",
             addresses = listOf("9.9.9.9", "149.112.112.112"),
+            addressesV6 = listOf("2620:fe::fe", "2620:fe::9"),
         ),
         CLOUDFLARE(
             label = "Cloudflare",
             description = "1.1.1.1, 1.0.0.1",
             addresses = listOf("1.1.1.1", "1.0.0.1"),
+            addressesV6 = listOf("2606:4700:4700::1111", "2606:4700:4700::1001"),
         ),
         GOOGLE(
             label = "Google",
             description = "8.8.8.8, 8.8.4.4",
             addresses = listOf("8.8.8.8", "8.8.4.4"),
+            addressesV6 = listOf("2001:4860:4860::8888", "2001:4860:4860::8844"),
         ),
         SYSTEM(
             label = "System DNS",
@@ -315,6 +400,7 @@ class SettingsStore(context: Context) {
         private const val KEY_HTTP_PROXY_PORT = "http_proxy_port"
         private const val KEY_DNS_PROVIDER = "dns_provider"
         private const val KEY_CUSTOM_DOH_URL = "custom_doh_url"
+        private const val KEY_CUSTOM_DNS_IP = "custom_dns_ip"
         private const val KEY_BOOTSTRAP_DNS_PROVIDER = "bootstrap_dns_provider"
         private const val KEY_CUSTOM_BOOTSTRAP_IP = "custom_bootstrap_ip"
         private const val KEY_PROXY_ONLY_MODE = "proxy_only_mode"
@@ -327,6 +413,7 @@ class SettingsStore(context: Context) {
         private const val KEY_UPSTREAM_PROXY_PASSWORD = "upstream_proxy_password"
         private const val KEY_EXCLUDED_APPS = "excluded_apps"
         private const val KEY_TLS_SPLIT_MODE = "tls_split_mode"
+        private const val KEY_IP_VERSION_MODE = "ip_version_mode"
         const val DEFAULT_SOCKS_BIND_ADDRESS = "127.0.0.1"
         const val DEFAULT_SOCKS_PORT = 1080
         const val DEFAULT_HTTP_PROXY_PORT = 8080
@@ -344,6 +431,18 @@ class SettingsStore(context: Context) {
                 val uri = java.net.URI.create(trimmed)
                 !uri.host.isNullOrBlank()
             }.getOrDefault(false)
+        }
+
+        /** The DoH endpoint URL for a bare IP literal:
+         *  `https://<ip>/dns-query`, with IPv6 literals bracketed
+         *  as URL authorities require. Pure string work (callers
+         *  validate the literal with [isValidIpAddress] first);
+         *  blank input yields null. */
+        fun dohUrlForIpLiteral(value: String): String? {
+            val host = value.trim().lowercase()
+            if (host.isEmpty()) return null
+            val authority = if (host.contains(':')) "[$host]" else host
+            return "https://$authority/dns-query"
         }
 
         fun isValidIpAddress(value: String): Boolean {

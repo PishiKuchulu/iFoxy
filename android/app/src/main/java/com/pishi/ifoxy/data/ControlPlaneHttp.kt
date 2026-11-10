@@ -2,12 +2,14 @@ package com.pishi.ifoxy.data
 
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import com.pishi.ifoxy.vpn.upstream.TlsClientHelloSplitter
 import java.io.FilterOutputStream
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -187,6 +189,51 @@ private class ProtectingSocketFactory : SocketFactory() {
             .apply { connect(InetSocketAddress(host, port)) }
 }
 
+/** Orders/filters system-resolved addresses by the IP version
+ *  mode: AUTO and DUAL_STACK keep the system order untouched
+ *  (OkHttp already tries addresses in order, and dual-stack on
+ *  the control plane has no racing dialer to feed); IPV6_FIRST
+ *  moves IPv6 ahead; the ONLY modes filter. Pure: unit-tested.
+ *  The data plane's string form of the same semantics is
+ *  orderEdgeAddresses (vpn/upstream). */
+internal fun orderInetAddresses(
+    addresses: List<InetAddress>,
+    mode: SettingsStore.IpVersionMode,
+): List<InetAddress> = when (mode) {
+    SettingsStore.IpVersionMode.AUTO,
+    SettingsStore.IpVersionMode.DUAL_STACK,
+    -> addresses
+    SettingsStore.IpVersionMode.IPV6_FIRST ->
+        addresses.filter { it !is Inet4Address } + addresses.filter { it is Inet4Address }
+    SettingsStore.IpVersionMode.IPV4_ONLY -> addresses.filter { it is Inet4Address }
+    SettingsStore.IpVersionMode.IPV6_ONLY -> addresses.filter { it !is Inet4Address }
+}
+
+/** OkHttp DNS that applies the current [SettingsStore.IpVersionMode]
+ *  to control-plane lookups, read at call time through
+ *  [ControlPlaneHttp.ipVersionModeProvider] (the same provider
+ *  pattern as the TLS split mode). Bare IP literals pass through
+ *  unfiltered: they need no resolution, and filtering one out (a
+ *  configured DoH endpoint under the opposite ONLY mode) would
+ *  break the very lookups the mode's own machinery depends on. */
+private object IpVersionModeDns : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        val mode = ControlPlaneHttp.ipVersionModeProvider?.invoke()
+            ?: SettingsStore.IpVersionMode.AUTO
+        if (isIpLiteralHost(hostname)) return listOf(InetAddress.getByName(hostname))
+        return orderInetAddresses(InetAddress.getAllByName(hostname).toList(), mode)
+    }
+}
+
+private fun isIpLiteralHost(hostname: String): Boolean {
+    if (hostname.contains(':')) return true
+    val parts = hostname.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && part.toInt() <= 255
+    }
+}
+
 object ControlPlaneHttp {
     val cookieJar = SimpleCookieJar()
 
@@ -196,9 +243,13 @@ object ControlPlaneHttp {
     @Volatile
     var tlsSplitModeProvider: (() -> SettingsStore.TlsSplitMode)? = null
 
+    @Volatile
+    var ipVersionModeProvider: (() -> SettingsStore.IpVersionMode)? = null
+
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
+            .dns(IpVersionModeDns)
             .socketFactory(ProtectingSocketFactory())
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
