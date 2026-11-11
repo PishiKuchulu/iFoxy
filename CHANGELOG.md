@@ -1,5 +1,20 @@
 # Changelog — iFoxy desktop (Windows & Linux)
 
+## v1.0.39 combined release - sign-in page user-agent fix (Android), PKCE token exchange (Android + desktop)
+
+Android: the sign-in browser now presents the app's
+MozillaVPN client identity — on flagged networks Mozilla's
+bot protection served the browser user agent only a JS
+challenge page that renders blank in the WebView, while the
+client identity receives the real sign-in page — and the
+native token exchange uses the PKCE authorization-code
+flow with the legacy grant as fallback.
+Desktop (still 0.2.3): the token exchange uses the same
+PKCE flow, with the legacy grant kept as a fallback.
+
+Android 1.0.39 (versionCode 76): see android/CHANGELOG.md.
+Supersedes v1.0.38.
+
 ## v1.0.38 combined release - email confirmation fix, compact update dialog (Android)
 
 Android-focused release (desktop unchanged, still 0.2.3):

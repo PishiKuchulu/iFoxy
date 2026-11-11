@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.39 (versionCode 76) - sign-in page loads again, PKCE native exchange
+
+- The sign-in page opened as a blank white page on flagged
+  networks. The built-in browser presented a Firefox-for-
+  Android user agent, and Mozilla's bot protection serves
+  browser user agents only its JavaScript challenge
+  interstitial on the sign-in host — which renders blank in
+  the WebView and never completes — while the app's
+  MozillaVPN client identity is served the real sign-in
+  page (probe-verified 2026-11-09). Clearing the app's data
+  did not change the white page and the phone's regular
+  browser loaded the site fine, ruling out cookie and
+  network causes. The sign-in browser now presents the
+  MozillaVPN client identity.
+- The native token exchange after a browser sign-in now uses the standard
+  OAuth authorization-code grant with PKCE, the flow the Firefox browser
+  itself uses: the session token is traded for a one-time code at
+  /v1/oauth/authorization, and the code for tokens at the dedicated OAuth
+  host (/v1/token). The legacy fxa-credentials grant, which Mozilla's bot
+  protection has been answering with a CAPTCHA challenge on native clients
+  (see 1.0.36), is only a fallback for unexpected failures. Unconfirmed-session
+  and CAPTCHA verdicts are handled exactly as before.
+
 ## 1.0.38 (versionCode 75) - email confirmation code fix, compact update dialog
 
 - When Firefox Accounts asked for the confirmation code it
