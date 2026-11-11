@@ -57,7 +57,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import com.pishi.ifoxy.data.AppLogger
 import com.pishi.ifoxy.data.BrowserTokenRequest
-import com.pishi.ifoxy.data.FIREFOX_ANDROID_UA
+import com.pishi.ifoxy.data.MOZILLA_VPN_USER_AGENT
 import com.pishi.ifoxy.ui.theme.IFoxyBgDark
 import com.pishi.ifoxy.ui.theme.IFoxyErrorOnDark
 import com.pishi.ifoxy.ui.theme.IFoxyYellow
@@ -1089,7 +1089,17 @@ internal fun BrowserLoginScreen(
                         settings.allowContentAccess = false
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
-                        settings.userAgentString = FIREFOX_ANDROID_UA
+                        // Present the app's MozillaVPN client identity,
+                        // not a browser UA: on flagged networks Fastly
+                        // answers browser user agents with only its JS
+                        // challenge interstitial, which renders as a
+                        // blank white page in the WebView and never
+                        // completes, while the client identity is served
+                        // the real sign-in page (probe-verified
+                        // 2026-11-09: 200, full page, vs. the 3 KB
+                        // challenge page for browser UAs).
+                        settings.userAgentString = MOZILLA_VPN_USER_AGENT
+                        AppLogger.i(TAG, "sign-in WebView presenting the MozillaVPN client user agent")
                         val cookieManager = CookieManager.getInstance()
                         cookieManager.setAcceptCookie(true)
                         cookieManager.setAcceptThirdPartyCookies(this, true)
