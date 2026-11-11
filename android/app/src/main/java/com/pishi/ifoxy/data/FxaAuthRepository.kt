@@ -327,10 +327,11 @@ class FxaAuthRepository(
 
     private suspend fun completeLogin(sessionToken: String, preExchangedToken: JSONObject? = null) {
         // A token response produced inside the signed-in browser page
-        // wins over the native exchange; a malformed one falls back.
+        // wins over the native exchange; a malformed one falls back to
+        // the native PKCE exchange (see obtainOAuthTokens).
         val tokenData = preExchangedToken
             ?.takeIf { it.optString("access_token").isNotBlank() }
-            ?: oauthToken(sessionToken)
+            ?: obtainOAuthTokens(sessionToken)
         val auth = RuntimeAuth(
             accessToken = tokenData.getString("access_token"),
             refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
@@ -381,6 +382,74 @@ class FxaAuthRepository(
 
     private suspend fun oauthToken(sessionToken: String): JSONObject {
         return fxaDo("POST", "/oauth/token", sessionToken = sessionToken, jsonBody = oauthTokenBody())
+    }
+
+    /** Native token exchange, PKCE first. The authorization-code flow is the
+     *  one the Firefox browser itself uses; the legacy fxa-credentials grant is
+     *  only a fallback for unexpected failures. Mozilla's own verdicts
+     *  (unconfirmed session, CAPTCHA, bot block) are rethrown unchanged,
+     *  because the legacy grant would only repeat them. */
+    private suspend fun obtainOAuthTokens(sessionToken: String): JSONObject =
+        try {
+            exchangeSessionWithOAuthCode(sessionToken).also {
+                AppLogger.i(TAG, "native sign-in: PKCE authorization-code exchange succeeded")
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            if (
+                failure is FastlyBlockedException ||
+                failure.isUnconfirmedSession() ||
+                failure.isCaptchaChallenge()
+            ) {
+                throw failure
+            }
+            AppLogger.w(TAG, "PKCE token exchange failed; trying the legacy grant", failure)
+            oauthToken(sessionToken)
+        }
+
+    /** Standard OAuth 2.0 authorization-code grant with PKCE, started from
+     *  the session token. Two calls:
+     *   1. POST /v1/oauth/authorization on the API host, Hawk-signed with the
+     *      session token. It returns a one-time code bound to our S256
+     *      challenge.
+     *   2. POST /v1/token on the dedicated OAuth host with the verifier. This
+     *      call carries no session token, the same shape FoxyVPN uses. */
+    private suspend fun exchangeSessionWithOAuthCode(sessionToken: String): JSONObject {
+        val verifier = randomBase64Url(32)
+        val state = randomBase64Url(16)
+
+        val authorizeBody = JSONObject().apply {
+            put("client_id", FIREFOX_CLIENT_ID)
+            put("response_type", "code")
+            put("scope", OAUTH_SCOPE)
+            put("state", state)
+            put("access_type", "offline")
+            put("code_challenge", pkceChallengeS256(verifier))
+            put("code_challenge_method", "S256")
+        }
+        val authorization = fxaDo(
+            "POST",
+            "/oauth/authorization",
+            sessionToken = sessionToken,
+            jsonBody = authorizeBody,
+        )
+        val code = authorization.optString("code", "")
+        if (code.isBlank() || authorization.optString("state", "") != state) {
+            throw FxaApiError("Invalid OAuth authorization response", null, 500)
+        }
+
+        val tokenBody = JSONObject().apply {
+            put("client_id", FIREFOX_CLIENT_ID)
+            put("grant_type", "authorization_code")
+            put("code", code)
+            put("code_verifier", verifier)
+        }
+        val tokens = fxaDo("POST", "/token", jsonBody = tokenBody, baseUrl = FXA_OAUTH_SERVER)
+        if (tokens.optString("access_token", "").isBlank()) {
+            throw FxaApiError("OAuth token response is missing an access token", null, 500)
+        }
+        return tokens
     }
 
     /** Builds the Hawk-signed /oauth/token request for [sessionToken]
@@ -512,6 +581,20 @@ class FxaAuthRepository(
         if (payloadHash.isNotEmpty()) header += ", hash=\"$payloadHash\""
         return header
     }
+}
+
+/** A random RFC 7636 code verifier or OAuth state: URL-safe base64 without
+ *  padding over [byteCount] random bytes (32 bytes gives a 43-character
+ *  verifier, the RFC's minimum length). */
+internal fun randomBase64Url(byteCount: Int): String {
+    val bytes = ByteArray(byteCount).also { SecureRandom().nextBytes(it) }
+    return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+}
+
+/** RFC 7636 S256 code challenge: BASE64URL(SHA-256(ASCII(verifier))). */
+internal fun pkceChallengeS256(verifier: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII))
+    return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
 }
 
 // TST-FX-11: internal (not public) so JVM unit tests can verify the

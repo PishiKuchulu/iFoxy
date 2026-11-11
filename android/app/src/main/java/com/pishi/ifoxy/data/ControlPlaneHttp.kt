@@ -22,9 +22,12 @@ private const val TAG = "ControlPlaneHttp"
 
 const val MOZILLA_VPN_USER_AGENT = "MozillaVPN/2.35.0 (sys:android 14; iap:true)"
 
-/** The Firefox-for-Android user agent the browser sign-in WebView
- *  presents. Shared so the Fastly challenge solver can also probe a
- *  challenged host the way the sign-in browser would. */
+/** A Firefox-for-Android user agent, kept for the Fastly challenge
+ *  solver's probe matrix. The sign-in WebView itself presents
+ *  [MOZILLA_VPN_USER_AGENT]: on flagged networks Fastly serves
+ *  browser user agents only its JS challenge interstitial, which
+ *  renders blank in the WebView, while the client identity receives
+ *  the real sign-in page. */
 const val FIREFOX_ANDROID_UA =
     "Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
 
