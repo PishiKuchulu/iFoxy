@@ -66,7 +66,7 @@ private val CLEARANCE_COOKIE_HOSTS = listOf(
 )
 
 /** User agents the probe presents, in order: the app's native FxA
- *  identity, the sign-in browser's, and a desktop browser's. All
+ *  identity, a mobile browser's, and a desktop browser's. All
  *  three are existing constants of this codebase (the Mozilla UA /
  *  client identity stays frozen). */
 private val PROBE_USER_AGENTS = listOf(

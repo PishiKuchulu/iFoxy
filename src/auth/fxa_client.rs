@@ -1,16 +1,36 @@
+use base64::Engine as _;
 use crate::crypto::fxa_kdf::{derive_auth_pw, derive_hawk_credentials, CryptoError};
 use crate::crypto::hawk::{generate_hawk_header, HawkError};
+use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use zeroize::Zeroize;
 
 const FXA_AUTH_SERVER: &str = "https://api.accounts.firefox.com/v1";
+/// The dedicated OAuth host: the token call of the PKCE grant goes here.
+const FXA_OAUTH_SERVER: &str = "https://oauth.accounts.firefox.com/v1";
 const FIREFOX_CLIENT_ID: &str = "5882386c6d801776";
 const OAUTH_SCOPE: &str = "profile https://identity.mozilla.com/apps/vpn";
 pub const MOZILLA_VPN_USER_AGENT: &str = "MozillaVPN/2.35.0 (sys:linux; iap:true)";
+
+/// A random RFC 7636 code verifier or OAuth state: URL-safe base64 without
+/// padding over `byte_count` random bytes. 32 bytes gives the 43-character
+/// verifier that is the RFC's minimum length.
+fn random_base64url(byte_count: usize) -> String {
+    let mut bytes = vec![0u8; byte_count];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+}
+
+/// RFC 7636 S256 code challenge: BASE64URL(SHA-256(ASCII(verifier))).
+fn pkce_challenge_s256(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.as_slice())
+}
 
 #[derive(Error, Debug)]
 pub enum AuthError {
@@ -198,18 +218,18 @@ impl FxaClient {
         self.exchange_oauth(session_token).await
     }
 
-    pub async fn exchange_oauth(&self, session_token: &str) -> Result<OAuthTokens, AuthError> {
-        let url = format!("{}/oauth/token", self.auth_server);
-        let body = serde_json::json!({
-            "client_id": FIREFOX_CLIENT_ID,
-            "grant_type": "fxa-credentials",
-            "scope": OAUTH_SCOPE,
-            "access_type": "offline"
-        });
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+    /// POST a JSON body signed with Hawk credentials derived from the session
+    /// token, and return the parsed JSON response.
+    async fn post_hawk_json(
+        &self,
+        url: &str,
+        session_token: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, AuthError> {
+        let body_bytes = serde_json::to_vec(body).unwrap_or_default();
 
         let (token_id, mut hmac_key) = derive_hawk_credentials(session_token)?;
-        let hawk_header = generate_hawk_header("POST", &url, &token_id, &hmac_key, &body_bytes)?;
+        let hawk_header = generate_hawk_header("POST", url, &token_id, &hmac_key, &body_bytes)?;
         hmac_key.zeroize();
 
         let mut headers = HeaderMap::new();
@@ -223,12 +243,11 @@ impl FxaClient {
 
         let res = self
             .client
-            .post(&url)
+            .post(url)
             .headers(headers)
             .body(body_bytes)
             .send()
             .await?;
-
         let status = res.status();
         crate::crypto::hawk::check_response_for_clock_skew(res.headers());
         let text = res.text().await.unwrap_or_default();
@@ -238,15 +257,113 @@ impl FxaClient {
                 message: text,
             });
         }
+        serde_json::from_str(&text).map_err(|e| AuthError::InvalidState(e.to_string()))
+    }
 
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| AuthError::InvalidState(e.to_string()))?;
+    /// POST an unauthenticated JSON body and return the parsed JSON response.
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, AuthError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(MOZILLA_VPN_USER_AGENT));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+        let res = self
+            .client
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await?;
+        let status = res.status();
+        crate::crypto::hawk::check_response_for_clock_skew(res.headers());
+        let text = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AuthError::Api {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| AuthError::InvalidState(e.to_string()))
+    }
+
+    /// Trade the session token for OAuth tokens: the PKCE
+    /// authorization-code grant first, with the legacy `fxa-credentials`
+    /// grant as a fallback for unexpected failures, mirroring the
+    /// Android client.
+    pub async fn exchange_oauth(&self, session_token: &str) -> Result<OAuthTokens, AuthError> {
+        match self.exchange_oauth_pkce(session_token).await {
+            Ok(tokens) => Ok(tokens),
+            Err(failure) => {
+                tracing::warn!(
+                    "PKCE token exchange failed ({failure}); trying the legacy fxa-credentials grant"
+                );
+                self.exchange_oauth_legacy(session_token).await
+            }
+        }
+    }
+
+    /// Authorization-code grant with PKCE, the flow the Firefox browser itself
+    /// uses: the session token is traded for a one-time code (Hawk-signed),
+    /// and the code plus our verifier is traded for tokens at the dedicated
+    /// OAuth host.
+    async fn exchange_oauth_pkce(&self, session_token: &str) -> Result<OAuthTokens, AuthError> {
+        let verifier = random_base64url(32);
+        let state = random_base64url(16);
+
+        let authorize_url = format!("{}/oauth/authorization", self.auth_server);
+        let authorize_body = serde_json::json!({
+            "client_id": FIREFOX_CLIENT_ID,
+            "response_type": "code",
+            "scope": OAUTH_SCOPE,
+            "state": &state,
+            "access_type": "offline",
+            "code_challenge": pkce_challenge_s256(&verifier),
+            "code_challenge_method": "S256"
+        });
+        let authorization = self
+            .post_hawk_json(&authorize_url, session_token, &authorize_body)
+            .await?;
+        let code = authorization["code"].as_str().unwrap_or_default();
+        if code.is_empty() || authorization["state"].as_str() != Some(state.as_str()) {
+            return Err(AuthError::InvalidState(
+                "Invalid OAuth authorization response".to_string(),
+            ));
+        }
+
+        let token_url = format!("{}/token", FXA_OAUTH_SERVER);
+        let token_body = serde_json::json!({
+            "client_id": FIREFOX_CLIENT_ID,
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": &verifier
+        });
+        let json = self.post_json(&token_url, &token_body).await?;
+        Self::tokens_from_json(&json)
+    }
+
+    /// The legacy `fxa-credentials` grant, kept as the fallback for when
+    /// the PKCE exchange fails unexpectedly.
+    async fn exchange_oauth_legacy(&self, session_token: &str) -> Result<OAuthTokens, AuthError> {
+        let url = format!("{}/oauth/token", self.auth_server);
+        let body = serde_json::json!({
+            "client_id": FIREFOX_CLIENT_ID,
+            "grant_type": "fxa-credentials",
+            "scope": OAUTH_SCOPE,
+            "access_type": "offline"
+        });
+        let json = self.post_hawk_json(&url, session_token, &body).await?;
+        Self::tokens_from_json(&json)
+    }
+
+    /// Build the token set from a token-endpoint JSON response.
+    fn tokens_from_json(json: &serde_json::Value) -> Result<OAuthTokens, AuthError> {
         let access_token = json["access_token"]
             .as_str()
             .ok_or_else(|| AuthError::InvalidState("Missing access_token".to_string()))?
             .to_string();
-
         let refresh_token = json["refresh_token"].as_str().map(|s| s.to_string());
         let expires_in = json["expires_in"].as_u64().unwrap_or(86400);
         let now = SystemTime::now()
@@ -358,5 +475,27 @@ impl FxaClient {
 impl Default for FxaClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod pkce_tests {
+    use super::{pkce_challenge_s256, random_base64url};
+
+    #[test]
+    fn s256_challenge_matches_rfc7636_appendix_b() {
+        assert_eq!(
+            pkce_challenge_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn verifier_from_32_bytes_is_43_url_safe_chars() {
+        let verifier = random_base64url(32);
+        assert_eq!(verifier.len(), 43);
+        assert!(verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 }
